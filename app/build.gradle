@@ -86,16 +86,9 @@ android {
 }
 
 dependencies {
-    try {
-        var localAndroidBle = file(getProperty("combustion.use-local-framework"))
-        if(localAndroidBle.exists()) {
-            implementation(project(":combustion-android-ble"))
-        } else {
-            implementation("com.github.combustion-inc:combustion-android-ble:$combustion_framework_version")
-        }
-    } catch (e) {
-        implementation("com.github.combustion-inc:combustion-android-ble:$combustion_framework_version")
-    }
+    // *** MODIFIED: Force download of latest library version ***
+    implementation project(':combustion-android-ble')
+    
     implementation('androidx.core:core-ktx:1.9.0')
     implementation("androidx.appcompat:appcompat:1.6.1")
     implementation("com.google.android.material:material:1.8.0")

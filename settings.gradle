@@ -3,19 +3,11 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
-        jcenter() // Warning: this repository is going to shut down soon
-        maven { url 'https://www.jitpack.io' }
+        maven { url 'https://jitpack.io' }
     }
 }
 rootProject.name = "Combustion Inc. Android Example"
+
 include ':app'
-
-try {
-    var localAndroidBle = file(getProperty("combustion.use-local-framework"))
-    if(localAndroidBle.exists()) {
-        include ':combustion-android-ble'
-        project(':combustion-android-ble').projectDir = localAndroidBle
-    }
-} catch(e) {
-
-}
+include ':combustion-android-ble'
+project(':combustion-android-ble').projectDir = new File('combustion-android-ble/combustion-android-ble')
