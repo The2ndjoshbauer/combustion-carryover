@@ -79,6 +79,7 @@ data class ProbeState(
     val suggestedPullTemp: MutableState<String> = mutableStateOf("---")
     // Stores the user's selection (Default to Beef)
     val selectedMeatType: MutableState<MeatType> = mutableStateOf(MeatType.BEEF)
+    val isWrapped: MutableState<Boolean> = mutableStateOf(false)
     
     // The Physics Engine
     private val predictor = CarryoverPredictor()
@@ -149,11 +150,13 @@ data class ProbeState(
         if (currentCore != null && target != null && coreIdx < 8 && surfIdx < 8) {
             val pullAtC = predictor.predictPeakTemp(
                 targetTemp = target,
-                temperatures = temperaturesCelsius, // Pass all 8 temps
+                temperatures = temperaturesCelsius,
                 coreIndex = coreIdx.toInt(),
                 surfaceIndex = surfIdx.toInt(),
-                meatType = selectedMeatType.value // Use user selection
+                meatType = selectedMeatType.value,
+                isWrapped = isWrapped.value // <--- Pass the new state
             )
+            
             suggestedPullTemp.value = String.format("%.1f", convertTemperature(pullAtC))
         } else {
             suggestedPullTemp.value = "---"

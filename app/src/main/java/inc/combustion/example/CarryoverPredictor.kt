@@ -3,7 +3,7 @@ package inc.combustion.example
 import android.util.Log
 
 enum class MeatType(val displayName: String, val diffusivity: Double) {
-    // Diffusivity values (alpha) from Research Table 1 
+    // Diffusivity values (alpha) from Research Table 1
     // Units: 10^-7 m^2/s.
     BEEF("Beef (Steak)", 1.35e-7),
     PORK("Pork (Loin)", 1.33e-7),
@@ -15,15 +15,17 @@ enum class MeatType(val displayName: String, val diffusivity: Double) {
 class CarryoverPredictor {
 
     /**
-     * V3 PHYSICS ENGINE (Finite Difference Simulation)
+     * V3.5 PHYSICS ENGINE (Finite Difference Simulation)
      * Simulates the "Resting" phase to find the peak temperature.
+     * * @param isWrapped If true, assumes the meat is insulated (foil/cooler), preventing heat loss.
      */
     fun predictPeakTemp(
         targetTemp: Double,
         temperatures: List<Double>, // All 8 sensors
         coreIndex: Int,            // Which sensor is T_Core
         surfaceIndex: Int,         // Which sensor is T_Surface
-        meatType: MeatType
+        meatType: MeatType,
+        isWrapped: Boolean         // <--- NEW PARAMETER
     ): Double {
 
         // 1. SETUP THE GRID
@@ -41,9 +43,9 @@ class CarryoverPredictor {
         }
 
         // 2. SIMULATION PARAMETERS
-        val alpha = meatType.diffusivity // Thermal Diffusivity 
-        val dx = 0.006 // Distance between sensors (~6mm) [cite: 23]
-        val dt = 1.0   // Time step (1 second) [cite: 66]
+        val alpha = meatType.diffusivity // Thermal Diffusivity
+        val dx = 0.006 // Distance between sensors (~6mm)
+        val dt = 1.0   // Time step (1 second)
         
         // The "Stability Criterion" for the simulation (Fourier Number)
         // Fo = alpha * dt / dx^2
@@ -58,11 +60,12 @@ class CarryoverPredictor {
         var peakCoreTemp = simulatedCoreTemp
         
         // We assume "Resting Conditions":
-        // The surface is exposed to air at 25°C (77°F) [cite: 107]
         val ambientAirTemp = 25.0 
-        // Heat transfer coefficient for resting meat (h_c ~ 10 W/m2K) [cite: 139]
-        // Simplified cooling factor for the surface node
-        val surfaceCoolingRate = 0.005 
+        
+        // BOUNDARY CONDITION LOGIC:
+        // If Wrapped (Foil/Cooler): Heat cannot escape. Cooling rate is 0.0 (Insulated).
+        // If Unwrapped (Air): Heat escapes via natural convection. Cooling rate is 0.005.
+        val surfaceCoolingRate = if (isWrapped) 0.0 else 0.005 
 
         for (timeStep in 1..1200) {
             val newGrid = ArrayList<Double>(grid)
@@ -74,7 +77,7 @@ class CarryoverPredictor {
                 val T_left = grid[i - 1]
                 val T_right = grid[i + 1]
                 
-                // The Heat Equation: dT/dt = alpha * d^2T/dx^2 [cite: 37]
+                // The Heat Equation: dT/dt = alpha * d^2T/dx^2
                 val diffusion = Fo * (T_left - 2 * T_current + T_right)
                 newGrid[i] = T_current + diffusion
             }
@@ -86,7 +89,7 @@ class CarryoverPredictor {
             newGrid[0] = T_core + (Fo * 2 * (T_next - T_core))
 
             // C. Update Surface Node (Boundary Condition)
-            // Surface loses heat to the air [cite: 4]
+            // Surface loses heat to the air
             val T_surface = grid[grid.size - 1]
             val T_prev = grid[grid.size - 2]
             

@@ -1,19 +1,43 @@
+/*
+ * Project: Combustion Inc. Android Example
+ * File: DetailsScreen.kt
+ * Author: https://github.com/miwright2
+ *
+ * MIT License
+ *
+ * Copyright (c) 2022. Combustion Inc.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ */
+
 package inc.combustion.example.details
 
-import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.runtime.*
 import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.lifecycle.viewmodel.compose.viewModel
-import androidx.compose.material.* // For Dropdown
-import androidx.compose.ui.Modifier // For modifiers
-import androidx.compose.foundation.layout.* // For layout
-import androidx.compose.foundation.clickable
-import inc.combustion.example.components.SingleSelectDialog
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.layout.*
 import inc.combustion.example.AppState
 import inc.combustion.example.components.*
 import inc.combustion.framework.service.*
-import inc.combustion.example.MeatType
 import java.util.*
 import kotlin.math.roundToInt
 
@@ -71,10 +95,43 @@ fun DetailsContent(appState: AppState, screenState: DetailsScreenState) {
     var showProbeIDDialog by remember { mutableStateOf(false) }
     var showCancelPredictionDialog by remember { mutableStateOf(false) }
     var showEnterSetpointDialog by remember { mutableStateOf(false) }
-    var meatMenuExpanded by remember { mutableStateOf(false) } // Dropdown state
 
-    // ... (Dialogs omitted for brevity, logic remains same)
-    if (showProbeColorDialog) { /* ... */ } // Keep existing dialog logic if needed
+    if (showProbeColorDialog) {
+        SingleSelectDialog(
+            title = "Select Probe Color",
+            options = ProbeColor.values().map { it.toString() },
+            onOptionSelected = {
+                screenState.onSetProbeColorClick(ProbeColor.valueOf(it))
+                showProbeColorDialog = false
+            },
+            onDismissRequest = { showProbeColorDialog = false }
+        )
+    }
+
+    if (showProbeIDDialog) {
+        SingleSelectDialog(
+            title = "Select Probe ID",
+            options = ProbeID.values().map { it.toString() },
+            onOptionSelected = {
+                screenState.onSetProbeIDClick(ProbeID.valueOf(it))
+                showProbeIDDialog = false
+            },
+            onDismissRequest = { showProbeIDDialog = false }
+        )
+    }
+
+    if (showCancelPredictionDialog) {
+        ConfirmationDialog(
+            title = "Cancel Prediction?",
+            message = "Are you sure you want to cancel the current prediction?",
+            onConfirm = {
+                screenState.onCancelPredictionClick()
+                showCancelPredictionDialog = false
+            },
+            onDismiss = { showCancelPredictionDialog = false }
+        )
+    }
+
     if (showEnterSetpointDialog) {
         TemperatureSelectionDialog(
             title = "Target Temperature", buttonText = "Set",
@@ -101,44 +158,15 @@ fun DetailsContent(appState: AppState, screenState: DetailsScreenState) {
         } else {
             LazyColumn {
                 item { TemperaturesCard(probeState = screenState.probeState, cardIsExpanded = screenState.temperaturesCardIsExpanded) }
-                
-                // --- V3 PHYSICS PREDICTION CARD ---
-                item {
-                    Card(modifier = Modifier.fillMaxWidth().padding(10.dp), elevation = 4.dp) {
-                        Column(modifier = Modifier.padding(16.dp)) {
-                            Text("Physics Engine (V3)", style = MaterialTheme.typography.h6)
-                            
-                            // MEAT TYPE SELECTOR
-                            Box {
-                                Text(
-                                    text = "Meat: ${screenState.probeState.selectedMeatType.value.displayName} ▼",
-                                    modifier = Modifier.clickable { meatMenuExpanded = true }.padding(vertical = 8.dp),
-                                    color = MaterialTheme.colors.primary,
-                                    style = MaterialTheme.typography.body1
-                                )
-                                DropdownMenu(expanded = meatMenuExpanded, onDismissRequest = { meatMenuExpanded = false }) {
-                                    MeatType.values().forEach { type ->
-                                        DropdownMenuItem(onClick = {
-                                            screenState.probeState.selectedMeatType.value = type
-                                            meatMenuExpanded = false
-                                        }) { Text(text = type.displayName) }
-                                    }
-                                }
-                            }
 
-                            Spacer(modifier = Modifier.height(8.dp))
-                            
-                            // RESULT
-                            Text(
-                                text = "Pull at: ${screenState.probeState.suggestedPullTemp.value}°",
-                                style = MaterialTheme.typography.h3,
-                                color = inc.combustion.example.theme.Combustion_Red
-                            )
-                            Text("Simulating 20min into future...", style = MaterialTheme.typography.caption)
-                        }
-                    }
+                // --- V3.5 GLIDE PATH DASHBOARD ---
+                item {
+                    CookingDashboard(
+                        probeState = screenState.probeState,
+                        onMeatSelected = { type -> screenState.probeState.selectedMeatType.value = type }
+                    )
                 }
-                // ----------------------------------
+                // --------------------------------
 
                 item { PredictionsCard(probeState = screenState.probeState, cardIsExpanded = screenState.predictionsCardIsExpanded, onSetPredictionClick = { showEnterSetpointDialog = true }, onCancelPredictionClick = { showCancelPredictionDialog = true }) }
                 item { InstantReadCard(probeState = screenState.probeState, cardIsExpanded = screenState.instantReadCardIsExpanded) }
