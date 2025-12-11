@@ -1,31 +1,3 @@
-/*
- * Project: Combustion Inc. Android Example
- * File: ProbeState.kt
- * Author: https://github.com/miwright2
- *
- * MIT License
- *
- * Copyright (c) 2022. Combustion Inc.
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in all
- * copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
- */
-
 package inc.combustion.example.components
 
 import androidx.compose.runtime.MutableState
@@ -33,6 +5,8 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.snapshots.SnapshotStateList
 import inc.combustion.framework.service.*
+import inc.combustion.example.MeatType
+import inc.combustion.example.CarryoverPredictor
 import kotlin.math.roundToInt
 
 data class ProbeState(
@@ -43,6 +17,7 @@ data class ProbeState(
     val hardwareRevision: MutableState<String?> = mutableStateOf(null),
     val modelInformation: MutableState<ModelInformation?> = mutableStateOf(null),
     val rssi: MutableState<Int> = mutableStateOf(0),
+    // Stores T1..T8
     val temperaturesCelsius: SnapshotStateList<Double> = mutableStateListOf(
         0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
     ),
@@ -74,15 +49,7 @@ data class ProbeState(
     val predictionIsStale: MutableState<Boolean> = mutableStateOf(true)
 ) {
     enum class ConnectionState {
-        OUT_OF_RANGE,
-        ADVERTISING_CONNECTABLE,
-        ADVERTISING_NOT_CONNECTABLE,
-        CONNECTING,
-        CONNECTED,
-        DISCONNECTING,
-        DISCONNECTED,
-        NO_ROUTE;
-
+        OUT_OF_RANGE, ADVERTISING_CONNECTABLE, ADVERTISING_NOT_CONNECTABLE, CONNECTING, CONNECTED, DISCONNECTING, DISCONNECTED, NO_ROUTE;
         companion object {
             fun fromDeviceConnectionState(state: DeviceConnectionState) : ConnectionState {
                 return when(state) {
@@ -108,13 +75,13 @@ data class ProbeState(
     val T7 : MutableState<String> = mutableStateOf("")
     val T8 : MutableState<String> = mutableStateOf("")
 
-    // *** NEW VARIABLES FOR PREDICTION ***
-    // 1. The string to display on screen
+    // *** V3 VARIABLES ***
     val suggestedPullTemp: MutableState<String> = mutableStateOf("---")
+    // Stores the user's selection (Default to Beef)
+    val selectedMeatType: MutableState<MeatType> = mutableStateOf(MeatType.BEEF)
     
-    // 2. The Persistent Brain (Private, so it keeps its memory)
-    private val predictor = inc.combustion.example.CarryoverPredictor()
-
+    // The Physics Engine
+    private val predictor = CarryoverPredictor()
 
     val isUploading = mutableStateOf(false)
 
@@ -131,123 +98,68 @@ data class ProbeState(
         isUploading.value = (state.uploadState is ProbeUploadState.ProbeUploadInProgress)
         predictionIsStale.value = state.statusNotificationsStale
         
-        samplePeriod.value = if(state.sessionInfo != null) {
-            String.format("%d ms", state.sessionInfo?.let { it.samplePeriod.toLong() } )
-        } else {
-            ""
-        }
+        samplePeriod.value = if(state.sessionInfo != null) String.format("%d ms", state.sessionInfo?.let { it.samplePeriod.toLong() } ) else ""
+        batteryStatus.value = when(state.batteryStatus) { ProbeBatteryStatus.LOW_BATTERY -> "Low"; ProbeBatteryStatus.OK -> "Good" }
 
-        batteryStatus.value = when(state.batteryStatus) {
-            ProbeBatteryStatus.LOW_BATTERY -> "Low"
-            ProbeBatteryStatus.OK -> "Good"
-        }
-
-        instantRead.value = if(state.instantReadCelsius != null) {
-            String.format("%.1f", state.instantReadCelsius?.let { convertTemperature(it) })
-        } else {
-            "---"
-        }
-
+        // Update Temps
         if(state.temperaturesCelsius != null) {
-            state.temperaturesCelsius?.let {
-                T1.value = String.format("%.1f", convertTemperature(it.values[0]))
-                T2.value = String.format("%.1f", convertTemperature(it.values[1]))
-                T3.value = String.format("%.1f", convertTemperature(it.values[2]))
-                T4.value = String.format("%.1f", convertTemperature(it.values[3]))
-                T5.value = String.format("%.1f", convertTemperature(it.values[4]))
-                T6.value = String.format("%.1f", convertTemperature(it.values[5]))
-                T7.value = String.format("%.1f", convertTemperature(it.values[6]))
-                T8.value = String.format("%.1f", convertTemperature(it.values[7]))
+            val temps = state.temperaturesCelsius!!.values
+            // Copy to our observable list
+            for (i in 0..7) {
+                if (i < temps.size) temperaturesCelsius[i] = temps[i]
             }
-        } else {
-            T1.value = "---"; T2.value = "---"; T3.value = "---"; T4.value = "---"
-            T5.value = "---"; T6.value = "---"; T7.value = "---"; T8.value = "---"
+            // Display strings
+            T1.value = f(temps[0]); T2.value = f(temps[1]); T3.value = f(temps[2]); T4.value = f(temps[3])
+            T5.value = f(temps[4]); T6.value = f(temps[5]); T7.value = f(temps[6]); T8.value = f(temps[7])
         }
 
-        coreTemperature.value = state.coreTemperatureCelsius?.let {
-            String.format("%.1f", convertTemperature(it))
-        } ?: "---"
+        // Helper for formatting
+        fun fmt(v: Double?) = v?.let { String.format("%.1f", convertTemperature(it)) } ?: "---"
 
-        surfaceTemperature.value = state.surfaceTemperatureCelsius?.let {
-            String.format("%.1f", convertTemperature(it))
-        } ?: "---"
+        instantRead.value = fmt(state.instantReadCelsius)
+        coreTemperature.value = fmt(state.coreTemperatureCelsius)
+        surfaceTemperature.value = fmt(state.surfaceTemperatureCelsius)
+        ambientTemperature.value = fmt(state.ambientTemperatureCelsius)
 
-        ambientTemperature.value = state.ambientTemperatureCelsius?.let {
-            String.format("%.1f", convertTemperature(it))
-        } ?: "---"
-
-        uploadStatus.value = when(state.uploadState)  {
-            is ProbeUploadState.ProbeUploadInProgress -> {
-                val inProgress = state.uploadState as ProbeUploadState.ProbeUploadInProgress
-                val percent = ((inProgress.recordsTransferred.toFloat() / inProgress.recordsRequested.toFloat()) * 100.0).toInt()
-                "$percent% of ${inProgress.recordsRequested}"
-            }
-            is ProbeUploadState.ProbeUploadComplete -> "Upload Complete"
-            else -> "Please Connect"
-        }
-
-        recordRange.value = when(state.connectionState) {
-            DeviceConnectionState.CONNECTED -> "${state.minSequenceNumber} : ${state.maxSequenceNumber}"
-            else -> ""
-        }
-
+        // Metadata updates
+        uploadStatus.value = if(state.uploadState is ProbeUploadState.ProbeUploadInProgress) "Uploading..." else if (state.uploadState is ProbeUploadState.ProbeUploadComplete) "Complete" else "Connect"
+        recordRange.value = if(state.connectionState == DeviceConnectionState.CONNECTED) "${state.minSequenceNumber} : ${state.maxSequenceNumber}" else ""
         connectionDescription.value = state.connectionState.toString()
+        
+        // Update Sensor Indices
         virtualCoreSensor.value = state.virtualSensors.virtualCoreSensor.toString()
         virtualSurfaceSensor.value = state.virtualSensors.virtualSurfaceSensor.toString()
         virtualAmbientSensor.value = state.virtualSensors.virtualAmbientSensor.toString()
 
-        predictionState.value = state.predictionState?.let {
-            when(it) {
-                ProbePredictionState.PROBE_NOT_INSERTED -> "Not Inserted"
-                ProbePredictionState.PROBE_INSERTED -> "Inserted"
-                ProbePredictionState.COOKING -> "Cooking"
-                ProbePredictionState.PREDICTING -> "Predicting"
-                ProbePredictionState.REMOVAL_PREDICTION_DONE -> "Ready to Remove"
-                else -> "Unknown"
-            }
-        } ?: ""
-
-        predictionMode.value = state.predictionMode?.toString() ?: ProbePredictionMode.NONE.toString()
-        predictionType.value = state.predictionType?.toString() ?: ProbePredictionType.NONE.toString()
-
+        predictionState.value = state.predictionState?.toString() ?: ""
+        predictionMode.value = state.predictionMode?.toString() ?: ""
+        predictionType.value = state.predictionType?.toString() ?: ""
         rawSetPointTemperatureC.value = state.setPointTemperatureCelsius ?: DeviceManager.MINIMUM_PREDICTION_SETPOINT_CELSIUS
-
-        setPointTemperature.value = state.setPointTemperatureCelsius?.let {
-            convertTemperature(it).roundToInt().toString()
-        } ?: ""
-
-        heatStartTemperature.value = state.heatStartTemperatureCelsius?.let {
-            String.format("%.1f", convertTemperature(it))
-        } ?: "---"
-
-        prediction.value = state.predictionSeconds?.let {
-            String.format("%02d:%02d", it.toInt() / 60, it.toInt() % 60)
-        } ?: "--:--"
-
-        estimateCore.value = state.estimatedCoreCelsius?.let {
-            String.format("%.1f", convertTemperature(it))
-        } ?: "---"
-
-        percentThroughCook.value = state.predictionPercent?.let {
-            "${it.toInt()}%"
-        } ?: ""
-
-        // *** NEW PREDICTION LOGIC ***
+        setPointTemperature.value = state.setPointTemperatureCelsius?.let { convertTemperature(it).roundToInt().toString() } ?: ""
+        
+        // *** V3 SIMULATION TRIGGER ***
         val currentCore = state.coreTemperatureCelsius
-        val currentSurface = state.surfaceTemperatureCelsius
         val target = state.setPointTemperatureCelsius
+        
+        // We need valid indices (0-7) for Core and Surface to define the meat geometry
+        // The library returns these in `state.virtualSensors`
+        val coreIdx = state.virtualSensors.virtualCoreSensor.id
+        val surfIdx = state.virtualSensors.virtualSurfaceSensor.id
 
-        if (currentCore != null && currentSurface != null && target != null) {
-            // We use the persistent 'predictor' variable we created at the top of the class.
-            // This ensures it remembers previous temps for Velocity calculation.
-            val pullAtC = predictor.calculatePullTemp(target, currentCore, currentSurface)
+        if (currentCore != null && target != null && coreIdx < 8 && surfIdx < 8) {
+            val pullAtC = predictor.predictPeakTemp(
+                targetTemp = target,
+                temperatures = temperaturesCelsius, // Pass all 8 temps
+                coreIndex = coreIdx.toInt(),
+                surfaceIndex = surfIdx.toInt(),
+                meatType = selectedMeatType.value // Use user selection
+            )
             suggestedPullTemp.value = String.format("%.1f", convertTemperature(pullAtC))
         } else {
             suggestedPullTemp.value = "---"
         }
     }
 
-    private fun convertTemperature(temperature: Double) : Double {
-        return convertTemperatureUnits(temperature)
-    }
+    private fun f(v: Double) = String.format("%.1f", convertTemperature(v))
+    private fun convertTemperature(temperature: Double) : Double { return convertTemperatureUnits(temperature) }
 }

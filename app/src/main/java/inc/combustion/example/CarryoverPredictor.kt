@@ -1,79 +1,123 @@
 package inc.combustion.example
 
 import android.util.Log
-import java.util.Date
+
+enum class MeatType(val displayName: String, val diffusivity: Double) {
+    // Diffusivity values (alpha) from Research Table 1 
+    // Units: 10^-7 m^2/s.
+    BEEF("Beef (Steak)", 1.35e-7),
+    PORK("Pork (Loin)", 1.33e-7),
+    POULTRY("Chicken/Turkey", 1.42e-7),
+    FISH("Fish (Salmon)", 1.30e-7),
+    OTHER("Other (Average)", 1.35e-7)
+}
 
 class CarryoverPredictor {
 
-    // MEMORY: We need to remember the past to calculate speed
-    private var previousCoreTemp: Double? = null
-    private var previousTime: Long? = null
-    
-    // SMOOTHING: Temperature jumps around. We calculate average speed over time.
-    // This value stores the calculated "Degrees Per Minute"
-    private var currentRateOfRise: Double = 0.0
-
     /**
-     * V2 HYBRID ENGINE (Physics + Velocity)
-     * Calculates pull temp based on thermal momentum AND speed.
+     * V3 PHYSICS ENGINE (Finite Difference Simulation)
+     * Simulates the "Resting" phase to find the peak temperature.
      */
-    fun calculatePullTemp(targetFinalTemp: Double, currentCore: Double, currentSurface: Double): Double {
+    fun predictPeakTemp(
+        targetTemp: Double,
+        temperatures: List<Double>, // All 8 sensors
+        coreIndex: Int,            // Which sensor is T_Core
+        surfaceIndex: Int,         // Which sensor is T_Surface
+        meatType: MeatType
+    ): Double {
+
+        // 1. SETUP THE GRID
+        // We only care about the meat from Core to Surface.
+        // If Core is T1 and Surface is T6, we have 6 nodes.
+        if (coreIndex < 0 || surfaceIndex > 7 || coreIndex >= surfaceIndex) {
+            return targetTemp // Invalid geometry
+        }
         
-        // 1. SAFETY CHECKS
-        if (currentCore.isNaN() || currentSurface.isNaN() || currentCore < 0 || currentSurface > 1000) {
-            return targetFinalTemp
+        // Extract just the meat temperatures for our simulation grid
+        // Copy them to a mutable list so we can simulate "future" changes
+        var grid = ArrayList<Double>()
+        for (i in coreIndex..surfaceIndex) {
+            grid.add(temperatures[i])
         }
 
-        val currentTime = System.currentTimeMillis()
+        // 2. SIMULATION PARAMETERS
+        val alpha = meatType.diffusivity // Thermal Diffusivity 
+        val dx = 0.006 // Distance between sensors (~6mm) [cite: 23]
+        val dt = 1.0   // Time step (1 second) [cite: 66]
+        
+        // The "Stability Criterion" for the simulation (Fourier Number)
+        // Fo = alpha * dt / dx^2
+        val Fo = (alpha * dt) / (dx * dx)
 
-        // 2. CALCULATE VELOCITY (Rate of Rise)
-        // We only update the speed calculation every 5 seconds to avoid jitter
-        if (previousCoreTemp != null && previousTime != null) {
-            val timeDiffSeconds = (currentTime - previousTime!!) / 1000.0
-            
-            if (timeDiffSeconds >= 5.0) {
-                val tempDiff = currentCore - previousCoreTemp!!
+        // Safety: If Fo > 0.5, the simulation becomes unstable (math explodes).
+        if (Fo > 0.5) return targetTemp 
+
+        // 3. RUN THE SIMULATION LOOP (The "Crystal Ball")
+        // We simulate up to 20 minutes (1200 seconds) into the future
+        var simulatedCoreTemp = grid[0]
+        var peakCoreTemp = simulatedCoreTemp
+        
+        // We assume "Resting Conditions":
+        // The surface is exposed to air at 25°C (77°F) [cite: 107]
+        val ambientAirTemp = 25.0 
+        // Heat transfer coefficient for resting meat (h_c ~ 10 W/m2K) [cite: 139]
+        // Simplified cooling factor for the surface node
+        val surfaceCoolingRate = 0.005 
+
+        for (timeStep in 1..1200) {
+            val newGrid = ArrayList<Double>(grid)
+
+            // A. Update Interior Nodes (Heat Diffusion)
+            // Temperature change depends on neighbors (T_left, T_right)
+            for (i in 1 until grid.size - 1) {
+                val T_current = grid[i]
+                val T_left = grid[i - 1]
+                val T_right = grid[i + 1]
                 
-                // Convert to "Degrees Per Minute"
-                // Example: Rose 0.1 degrees in 6 seconds = 1.0 degree/minute
-                val instantRate = (tempDiff / timeDiffSeconds) * 60.0
-                
-                // Smoothing: Don't just take the new number, blend it with the old one (80% old, 20% new)
-                // This prevents one bad sensor reading from ruining the math.
-                currentRateOfRise = (currentRateOfRise * 0.8) + (instantRate * 0.2)
-                
-                // Update memory
-                previousCoreTemp = currentCore
-                previousTime = currentTime
+                // The Heat Equation: dT/dt = alpha * d^2T/dx^2 [cite: 37]
+                val diffusion = Fo * (T_left - 2 * T_current + T_right)
+                newGrid[i] = T_current + diffusion
             }
-        } else {
-            // First run, just Initialize
-            previousCoreTemp = currentCore
-            previousTime = currentTime
+
+            // B. Update Core Node (Symmetry Condition)
+            // Heat can't flow "past" the center, so T_left is effectively T_right
+            val T_core = grid[0]
+            val T_next = grid[1]
+            newGrid[0] = T_core + (Fo * 2 * (T_next - T_core))
+
+            // C. Update Surface Node (Boundary Condition)
+            // Surface loses heat to the air [cite: 4]
+            val T_surface = grid[grid.size - 1]
+            val T_prev = grid[grid.size - 2]
+            
+            // Diffusion from inside + Cooling to outside
+            val internalFlux = Fo * (T_prev - T_surface)
+            val coolingFlux = -surfaceCoolingRate * (T_surface - ambientAirTemp)
+            
+            newGrid[grid.size - 1] = T_surface + internalFlux + coolingFlux
+
+            // D. Check for Peak
+            grid = newGrid
+            simulatedCoreTemp = grid[0]
+
+            if (simulatedCoreTemp > peakCoreTemp) {
+                peakCoreTemp = simulatedCoreTemp
+            } else {
+                // If core temp drops for 10 seconds straight, we found the peak.
+                // (Simplified here to just breaking on drop for speed)
+                if (simulatedCoreTemp < peakCoreTemp - 0.05) {
+                    break
+                }
+            }
         }
 
-        // 3. THE V2 FORMULA
-        // ------------------------------------------
+        // 4. CALCULATE PULL TEMP
+        // If the simulation says "It will rise 5 degrees", we pull 5 degrees early.
+        val predictedRise = peakCoreTemp - temperatures[coreIndex]
         
-        // Part A: The Gradient (How much hotter is the outside?)
-        val heatGradient = currentSurface - currentCore
-        // If outside is cooler than inside, carryover is zero.
-        if (heatGradient <= 0) return targetFinalTemp
-
-        // Part B: The Momentum (How fast are we moving?)
-        // If we are rising fast (high heat), carryover is bigger.
-        // If we are stalling (low heat), carryover is smaller.
+        // Safety: Only positive rise
+        val validRise = if (predictedRise > 0) predictedRise else 0.0
         
-        // FACTOR 1: Gradient Impact (10% of the difference travels in)
-        val gradientRise = heatGradient * 0.10
-        
-        // FACTOR 2: Velocity Impact (For every 1 degree/min of speed, add 2 degrees of carryover)
-        // Note: We clamp this so it can't be negative
-        val velocityRise = if (currentRateOfRise > 0) (currentRateOfRise * 2.0) else 0.0
-
-        // Combine them
-        val totalPredictedRise = gradientRise + velocityRise
-
-        return targetFinalTemp - totalPredictedRise
+        return targetTemp - validRise
     }
 }
