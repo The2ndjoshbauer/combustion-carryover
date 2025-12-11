@@ -1,5 +1,6 @@
 package inc.combustion.example.details
 
+import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.runtime.*
 import androidx.compose.runtime.snapshots.SnapshotStateList

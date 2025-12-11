@@ -143,8 +143,8 @@ data class ProbeState(
         
         // We need valid indices (0-7) for Core and Surface to define the meat geometry
         // The library returns these in `state.virtualSensors`
-        val coreIdx = state.virtualSensors.virtualCoreSensor.id
-        val surfIdx = state.virtualSensors.virtualSurfaceSensor.id
+        val coreIdx = state.virtualSensors.virtualCoreSensor.ordinal
+        val surfIdx = state.virtualSensors.virtualSurfaceSensor.ordinal
 
         if (currentCore != null && target != null && coreIdx < 8 && surfIdx < 8) {
             val pullAtC = predictor.predictPeakTemp(
