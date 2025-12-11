@@ -24,15 +24,20 @@ fun CookingDashboard(
     probeState: ProbeState,
     onMeatSelected: (MeatType) -> Unit
 ) {
+    // 1. Calculate the Zone (V3.5 Logic)
     val predictedString = probeState.suggestedPullTemp.value
     var zoneDisplay = "---"
-    
+
+    // Logic to hide Ghost Zone: Only show if valid number AND > 5 degrees
     if (predictedString != "---") {
         try {
             val centerVal = predictedString.toDouble()
-            val minPull = (centerVal - 1.0).roundToInt()
-            val maxPull = (centerVal + 1.0).roundToInt()
-            zoneDisplay = "$minPull° – $maxPull°"
+            // Safety check: Don't show a zone for 0.0 target
+            if (centerVal > 5.0) {
+                val minPull = (centerVal - 1.0).roundToInt()
+                val maxPull = (centerVal + 1.0).roundToInt()
+                zoneDisplay = "$minPull° – $maxPull°"
+            }
         } catch (e: Exception) {
             zoneDisplay = "---"
         }
@@ -41,24 +46,56 @@ fun CookingDashboard(
     Card(
         shape = RoundedCornerShape(16.dp),
         elevation = 8.dp,
-        modifier = Modifier.fillMaxWidth().padding(16.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(16.dp),
         backgroundColor = MaterialTheme.colors.surface
     ) {
         Column(
             modifier = Modifier.padding(20.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Text("GLIDE PATH ENGINE", style = MaterialTheme.typography.overline, color = Color.Gray, letterSpacing = 2.sp)
+            // HEADER
+            Text(
+                text = "GLIDE PATH ENGINE",
+                style = MaterialTheme.typography.overline,
+                color = Color.Gray,
+                letterSpacing = 2.sp
+            )
+
             Spacer(modifier = Modifier.height(16.dp))
 
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
+            // MAIN DATA ROW
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                // LEFT: CURRENT TEMP
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("${probeState.coreTemperature.value}°", style = MaterialTheme.typography.h3, fontWeight = FontWeight.Bold)
+                    Text(
+                        text = "${probeState.coreTemperature.value}°",
+                        style = MaterialTheme.typography.h3,
+                        fontWeight = FontWeight.Bold
+                    )
                     Text("CURRENT", style = MaterialTheme.typography.caption)
                 }
-                Text("➜", fontSize = 24.sp, color = Combustion_Yellow)
+
+                // ARROW INDICATOR
+                Text(
+                    text = "➜",
+                    fontSize = 24.sp,
+                    color = Combustion_Yellow
+                )
+
+                // RIGHT: PULL ZONE
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text(zoneDisplay, style = MaterialTheme.typography.h4, fontWeight = FontWeight.Bold, color = Combustion_Red)
+                    Text(
+                        text = zoneDisplay,
+                        style = MaterialTheme.typography.h4,
+                        fontWeight = FontWeight.Bold,
+                        color = Combustion_Red
+                    )
                     Text("PULL ZONE", style = MaterialTheme.typography.caption, color = Combustion_Red)
                 }
             }
@@ -66,33 +103,53 @@ fun CookingDashboard(
             Spacer(modifier = Modifier.height(24.dp))
             Divider(color = Color.DarkGray, thickness = 1.dp)
             Spacer(modifier = Modifier.height(16.dp))
-            
+
+            // MEAT SELECTOR BUTTONS
             Text("Material Physics:", style = MaterialTheme.typography.body2, color = Color.Gray)
             Spacer(modifier = Modifier.height(8.dp))
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+            
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceEvenly
+            ) {
                 MeatButton("🥩", "Beef", probeState.selectedMeatType.value == MeatType.BEEF) { onMeatSelected(MeatType.BEEF) }
                 MeatButton("🐷", "Pork", probeState.selectedMeatType.value == MeatType.PORK) { onMeatSelected(MeatType.PORK) }
                 MeatButton("🍗", "Poultry", probeState.selectedMeatType.value == MeatType.POULTRY) { onMeatSelected(MeatType.POULTRY) }
             }
 
             Spacer(modifier = Modifier.height(16.dp))
+            
+            // INSULATION TOGGLE
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.fillMaxWidth().background(Color(0xFFEEEEEE), shape = RoundedCornerShape(8.dp)).padding(horizontal = 12.dp, vertical = 4.dp)
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Color(0xFFEEEEEE), shape = RoundedCornerShape(8.dp))
+                    .padding(horizontal = 12.dp, vertical = 4.dp)
             ) {
                 Checkbox(
                     checked = probeState.isWrapped.value,
                     onCheckedChange = { probeState.isWrapped.value = it },
                     colors = CheckboxDefaults.colors(checkedColor = Combustion_Red)
                 )
-                Text("Wrapped / Insulated (Foil)", style = MaterialTheme.typography.body2, fontWeight = FontWeight.Medium, modifier = Modifier.padding(start = 8.dp))
+                Text(
+                    text = "Wrapped / Insulated (Foil)",
+                    style = MaterialTheme.typography.body2,
+                    fontWeight = FontWeight.Medium,
+                    modifier = Modifier.padding(start = 8.dp)
+                )
             }
         }
     }
 }
 
 @Composable
-fun MeatButton(icon: String, label: String, isSelected: Boolean, onClick: () -> Unit) {
+fun MeatButton(
+    icon: String, 
+    label: String, 
+    isSelected: Boolean, 
+    onClick: () -> Unit
+) {
     val bgColor = if (isSelected) Combustion_Yellow else Color.Transparent
     val textColor = if (isSelected) Color.Black else Color.LightGray
     val borderColor = if (isSelected) Combustion_Yellow else Color.Gray
