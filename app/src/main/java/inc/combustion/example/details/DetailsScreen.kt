@@ -96,12 +96,23 @@ fun DetailsContent(appState: AppState, screenState: DetailsScreenState) {
     var showCancelPredictionDialog by remember { mutableStateOf(false) }
     var showEnterSetpointDialog by remember { mutableStateOf(false) }
 
+    // --- DIALOG FIX: Convert between Index (Int) and Enum (Type) ---
+    
     if (showProbeColorDialog) {
+        val colors = ProbeColor.values()
+        // Find the index of the current color (default to 0 if not found)
+        val currentIndex = colors.indexOfFirst { it.toString() == screenState.probeState.color.value }.let { if (it == -1) 0 else it }
+        
         SingleSelectDialog(
             title = "Select Probe Color",
-            options = ProbeColor.values().map { it.toString() },
-            onOptionSelected = {
-                screenState.onSetProbeColorClick(ProbeColor.valueOf(it))
+            optionsList = colors.map { it.toString() },
+            defaultSelected = currentIndex, // Passing Int
+            submitButtonText = "OK",
+            onSubmitButtonClick = { index ->
+                // Converting Int back to Enum
+                if (index in colors.indices) {
+                    screenState.onSetProbeColorClick(colors[index])
+                }
                 showProbeColorDialog = false
             },
             onDismissRequest = { showProbeColorDialog = false }
@@ -109,22 +120,32 @@ fun DetailsContent(appState: AppState, screenState: DetailsScreenState) {
     }
 
     if (showProbeIDDialog) {
+        val ids = ProbeID.values()
+        // Find the index of the current ID
+        val currentIndex = ids.indexOfFirst { it.toString() == screenState.probeState.id.value }.let { if (it == -1) 0 else it }
+
         SingleSelectDialog(
             title = "Select Probe ID",
-            options = ProbeID.values().map { it.toString() },
-            onOptionSelected = {
-                screenState.onSetProbeIDClick(ProbeID.valueOf(it))
+            optionsList = ids.map { it.toString() },
+            defaultSelected = currentIndex, // Passing Int
+            submitButtonText = "OK",
+            onSubmitButtonClick = { index ->
+                 // Converting Int back to Enum
+                if (index in ids.indices) {
+                    screenState.onSetProbeIDClick(ids[index])
+                }
                 showProbeIDDialog = false
             },
             onDismissRequest = { showProbeIDDialog = false }
         )
     }
+    // -------------------------------------------------------------
 
     if (showCancelPredictionDialog) {
         ConfirmationDialog(
             title = "Cancel Prediction?",
-            message = "Are you sure you want to cancel the current prediction?",
-            onConfirm = {
+            details = "Are you sure you want to cancel the current prediction?",
+            onYesClick = {
                 screenState.onCancelPredictionClick()
                 showCancelPredictionDialog = false
             },

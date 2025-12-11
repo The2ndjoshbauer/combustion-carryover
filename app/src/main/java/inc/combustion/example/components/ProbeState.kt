@@ -17,10 +17,7 @@ data class ProbeState(
     val hardwareRevision: MutableState<String?> = mutableStateOf(null),
     val modelInformation: MutableState<ModelInformation?> = mutableStateOf(null),
     val rssi: MutableState<Int> = mutableStateOf(0),
-    // Stores T1..T8
-    val temperaturesCelsius: SnapshotStateList<Double> = mutableStateListOf(
-        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
-    ),
+    val temperaturesCelsius: SnapshotStateList<Double> = mutableStateListOf(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
     val connectionState: MutableState<ConnectionState> = mutableStateOf(ConnectionState.OUT_OF_RANGE),
     val uploadStatus: MutableState<String> = mutableStateOf(""),
     val recordsDownloaded: MutableState<Int> = mutableStateOf(0),
@@ -75,15 +72,12 @@ data class ProbeState(
     val T7 : MutableState<String> = mutableStateOf("")
     val T8 : MutableState<String> = mutableStateOf("")
 
-    // *** V3 VARIABLES ***
+    // V3.5 VARIABLES
     val suggestedPullTemp: MutableState<String> = mutableStateOf("---")
-    // Stores the user's selection (Default to Beef)
     val selectedMeatType: MutableState<MeatType> = mutableStateOf(MeatType.BEEF)
     val isWrapped: MutableState<Boolean> = mutableStateOf(false)
     
-    // The Physics Engine
     private val predictor = CarryoverPredictor()
-
     val isUploading = mutableStateOf(false)
 
     fun updateProbeState(state: Probe, downloads: Int) {
@@ -102,32 +96,22 @@ data class ProbeState(
         samplePeriod.value = if(state.sessionInfo != null) String.format("%d ms", state.sessionInfo?.let { it.samplePeriod.toLong() } ) else ""
         batteryStatus.value = when(state.batteryStatus) { ProbeBatteryStatus.LOW_BATTERY -> "Low"; ProbeBatteryStatus.OK -> "Good" }
 
-        // Update Temps
         if(state.temperaturesCelsius != null) {
             val temps = state.temperaturesCelsius!!.values
-            // Copy to our observable list
-            for (i in 0..7) {
-                if (i < temps.size) temperaturesCelsius[i] = temps[i]
-            }
-            // Display strings
+            for (i in 0..7) { if (i < temps.size) temperaturesCelsius[i] = temps[i] }
             T1.value = f(temps[0]); T2.value = f(temps[1]); T3.value = f(temps[2]); T4.value = f(temps[3])
             T5.value = f(temps[4]); T6.value = f(temps[5]); T7.value = f(temps[6]); T8.value = f(temps[7])
         }
 
-        // Helper for formatting
         fun fmt(v: Double?) = v?.let { String.format("%.1f", convertTemperature(it)) } ?: "---"
 
         instantRead.value = fmt(state.instantReadCelsius)
         coreTemperature.value = fmt(state.coreTemperatureCelsius)
         surfaceTemperature.value = fmt(state.surfaceTemperatureCelsius)
         ambientTemperature.value = fmt(state.ambientTemperatureCelsius)
-
-        // Metadata updates
         uploadStatus.value = if(state.uploadState is ProbeUploadState.ProbeUploadInProgress) "Uploading..." else if (state.uploadState is ProbeUploadState.ProbeUploadComplete) "Complete" else "Connect"
         recordRange.value = if(state.connectionState == DeviceConnectionState.CONNECTED) "${state.minSequenceNumber} : ${state.maxSequenceNumber}" else ""
         connectionDescription.value = state.connectionState.toString()
-        
-        // Update Sensor Indices
         virtualCoreSensor.value = state.virtualSensors.virtualCoreSensor.toString()
         virtualSurfaceSensor.value = state.virtualSensors.virtualSurfaceSensor.toString()
         virtualAmbientSensor.value = state.virtualSensors.virtualAmbientSensor.toString()
@@ -138,12 +122,8 @@ data class ProbeState(
         rawSetPointTemperatureC.value = state.setPointTemperatureCelsius ?: DeviceManager.MINIMUM_PREDICTION_SETPOINT_CELSIUS
         setPointTemperature.value = state.setPointTemperatureCelsius?.let { convertTemperature(it).roundToInt().toString() } ?: ""
         
-        // *** V3 SIMULATION TRIGGER ***
         val currentCore = state.coreTemperatureCelsius
         val target = state.setPointTemperatureCelsius
-        
-        // We need valid indices (0-7) for Core and Surface to define the meat geometry
-        // The library returns these in `state.virtualSensors`
         val coreIdx = state.virtualSensors.virtualCoreSensor.ordinal
         val surfIdx = state.virtualSensors.virtualSurfaceSensor.ordinal
 
@@ -154,15 +134,13 @@ data class ProbeState(
                 coreIndex = coreIdx.toInt(),
                 surfaceIndex = surfIdx.toInt(),
                 meatType = selectedMeatType.value,
-                isWrapped = isWrapped.value // <--- Pass the new state
+                isWrapped = isWrapped.value
             )
-            
             suggestedPullTemp.value = String.format("%.1f", convertTemperature(pullAtC))
         } else {
             suggestedPullTemp.value = "---"
         }
     }
-
     private fun f(v: Double) = String.format("%.1f", convertTemperature(v))
     private fun convertTemperature(temperature: Double) : Double { return convertTemperatureUnits(temperature) }
 }
