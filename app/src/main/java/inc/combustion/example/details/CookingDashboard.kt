@@ -4,7 +4,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.*
-import androidx.compose.runtime.Composable
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -18,6 +18,10 @@ import inc.combustion.example.theme.Combustion_Yellow
 import kotlin.math.roundToInt
 import androidx.compose.material.Checkbox
 import androidx.compose.material.CheckboxDefaults
+
+// --- V4 IMPORTS ---
+import inc.combustion.example.prediction.PhysicsPredictor
+import inc.combustion.framework.ble.device.MeatMaterials
 
 @Composable
 fun CookingDashboard(
@@ -41,6 +45,14 @@ fun CookingDashboard(
         } catch (e: Exception) {
             zoneDisplay = "---"
         }
+    }
+
+    // --- V4 MAPPING LOGIC ---
+    // Convert the UI "MeatType" (Simple) to Physics "MeatMaterials" (Complex)
+    val v4Material = when (probeState.selectedMeatType.value) {
+        MeatType.PORK -> MeatMaterials.PORK_SHOULDER
+        MeatType.POULTRY -> MeatMaterials.POULTRY
+        else -> MeatMaterials.BEEF_BRISKET // Default Beef to Brisket to test "The Stall"
     }
 
     Card(
@@ -104,6 +116,17 @@ fun CookingDashboard(
             Divider(color = Color.DarkGray, thickness = 1.dp)
             Spacer(modifier = Modifier.height(16.dp))
 
+            // --- V4 PREDICTION DISPLAY ---
+            // Inserted here: Shows the physics simulation result
+            V4PredictionCard(
+                currentCoreTemp = try { probeState.coreTemperature.value.toDouble() } catch(e:Exception) { 0.0 },
+                currentSurfaceTemp = try { probeState.surfaceTemperature.value.toDouble() } catch(e:Exception) { 0.0 },
+                meatType = v4Material
+            )
+            
+            Spacer(modifier = Modifier.height(16.dp))
+            // -----------------------------
+
             // MEAT SELECTOR BUTTONS
             Text("Material Physics:", style = MaterialTheme.typography.body2, color = Color.Gray)
             Spacer(modifier = Modifier.height(8.dp))
@@ -162,5 +185,76 @@ fun MeatButton(
         modifier = Modifier.height(40.dp)
     ) {
         Text("$icon $label", color = textColor, fontSize = 12.sp)
+    }
+}
+
+// --- V4 PREDICTION COMPONENT ---
+@Composable
+fun V4PredictionCard(
+    currentCoreTemp: Double,
+    currentSurfaceTemp: Double,
+    meatType: MeatMaterials
+) {
+    // 1. Initialize the Predictor (persist across recompositions)
+    val predictor = remember { PhysicsPredictor() }
+    
+    // 2. State for the display text
+    var predictionText by remember { mutableStateOf("Waiting for data...") }
+    var textColor by remember { mutableStateOf(Color.Gray) }
+
+    // 3. Run Prediction when temps change
+    LaunchedEffect(currentCoreTemp, currentSurfaceTemp, meatType) {
+        if (currentCoreTemp > 20 && currentSurfaceTemp > 20) {
+            
+            predictionText = "Simulating..."
+            
+            // Run calculation on background thread
+            val seconds = predictor.predictSecondsToDone(
+                currentCoreTemp = currentCoreTemp,
+                currentSurfaceTemp = currentSurfaceTemp,
+                targetTemp = 96.0, // Hardcoded 205°F for Brisket Test
+                meatType = meatType
+            )
+
+            if (seconds == -1L) {
+                predictionText = "Stall/Heat Error"
+                textColor = Color.Red
+            } else {
+                val hours = seconds / 3600
+                val minutes = (seconds % 3600) / 60
+                predictionText = "Time to Done: ${hours}h ${minutes}m"
+                textColor = Color(0xFF006400) // Dark Green
+            }
+        } else {
+            predictionText = "Probe Cold / Disconnected"
+        }
+    }
+
+    // 4. UI Layout
+    Card(
+        elevation = 2.dp,
+        backgroundColor = Color(0xFFF5F5F5), // Light grey background to distinguish it
+        modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)
+    ) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Text(
+                text = "V4 PHYSICS ENGINE (${meatType.displayName})",
+                style = MaterialTheme.typography.overline,
+                color = Color.Gray
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = predictionText,
+                style = MaterialTheme.typography.h6,
+                color = textColor
+            )
+            if (meatType.waterContentPercent > 0.4) {
+                Text(
+                    text = "*Simulating Stall (Evaporative Cooling)",
+                    style = MaterialTheme.typography.caption,
+                    color = Color.LightGray
+                )
+            }
+        }
     }
 }
