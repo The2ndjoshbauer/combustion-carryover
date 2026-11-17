@@ -59,7 +59,7 @@ fun MeasurementsLineChart(
     onPrimaryColor: Int = MaterialTheme.colors.onPrimary.toArgb(),
 ) {
     val configuration = LocalConfiguration.current
-    var initialized = remember{ false }
+    var initialized by remember { mutableStateOf(false) }
     val dataCount = derivedStateOf {  plotData.count() }
 
     if(dataCount.value <= 0) {

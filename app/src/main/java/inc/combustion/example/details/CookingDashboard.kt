@@ -16,10 +16,6 @@ import inc.combustion.example.components.ProbeState
 import inc.combustion.example.theme.Combustion_Red
 import inc.combustion.example.theme.Combustion_Yellow
 import kotlin.math.roundToInt
-import androidx.compose.material.Checkbox
-import androidx.compose.material.CheckboxDefaults
-
-// --- V4 IMPORTS ---
 import inc.combustion.example.prediction.PhysicsPredictor
 import inc.combustion.framework.ble.device.MeatMaterials
 
@@ -28,15 +24,12 @@ fun CookingDashboard(
     probeState: ProbeState,
     onMeatSelected: (MeatType) -> Unit
 ) {
-    // 1. Calculate the Zone (V3.5 Logic)
     val predictedString = probeState.suggestedPullTemp.value
     var zoneDisplay = "---"
 
-    // Logic to hide Ghost Zone: Only show if valid number AND > 5 degrees
     if (predictedString != "---") {
         try {
             val centerVal = predictedString.toDouble()
-            // Safety check: Don't show a zone for 0.0 target
             if (centerVal > 5.0) {
                 val minPull = (centerVal - 1.0).roundToInt()
                 val maxPull = (centerVal + 1.0).roundToInt()
@@ -47,12 +40,19 @@ fun CookingDashboard(
         }
     }
 
-    // --- V4 MAPPING LOGIC ---
-    // Convert the UI "MeatType" (Simple) to Physics "MeatMaterials" (Complex)
     val v4Material = when (probeState.selectedMeatType.value) {
         MeatType.PORK -> MeatMaterials.PORK_SHOULDER
         MeatType.POULTRY -> MeatMaterials.POULTRY
-        else -> MeatMaterials.BEEF_BRISKET // Default Beef to Brisket to test "The Stall"
+        else -> MeatMaterials.BEEF_BRISKET
+    }
+
+    val effectiveTargetC = if (probeState.setPointTemperature.value.isNotEmpty()) {
+        probeState.rawSetPointTemperatureC.value
+    } else {
+        when (probeState.selectedMeatType.value) {
+            MeatType.POULTRY -> 74.0
+            else -> 96.0
+        }
     }
 
     Card(
@@ -67,7 +67,6 @@ fun CookingDashboard(
             modifier = Modifier.padding(20.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            // HEADER
             Text(
                 text = "GLIDE PATH ENGINE",
                 style = MaterialTheme.typography.overline,
@@ -77,13 +76,11 @@ fun CookingDashboard(
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            // MAIN DATA ROW
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceEvenly,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // LEFT: CURRENT TEMP
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Text(
                         text = "${probeState.coreTemperature.value}°",
@@ -93,14 +90,12 @@ fun CookingDashboard(
                     Text("CURRENT", style = MaterialTheme.typography.caption)
                 }
 
-                // ARROW INDICATOR
                 Text(
                     text = "➜",
                     fontSize = 24.sp,
                     color = Combustion_Yellow
                 )
 
-                // RIGHT: PULL ZONE
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Text(
                         text = zoneDisplay,
@@ -116,33 +111,38 @@ fun CookingDashboard(
             Divider(color = Color.DarkGray, thickness = 1.dp)
             Spacer(modifier = Modifier.height(16.dp))
 
-            // --- V4 PREDICTION DISPLAY ---
-            // Inserted here: Shows the physics simulation result
             V4PredictionCard(
-                currentCoreTemp = try { probeState.coreTemperature.value.toDouble() } catch(e:Exception) { 0.0 },
-                currentSurfaceTemp = try { probeState.surfaceTemperature.value.toDouble() } catch(e:Exception) { 0.0 },
+                currentCoreTemp = probeState.rawCoreTemperatureC.value,
+                currentSurfaceTemp = probeState.rawSurfaceTemperatureC.value,
+                targetTemp = effectiveTargetC,
                 meatType = v4Material
             )
-            
-            Spacer(modifier = Modifier.height(16.dp))
-            // -----------------------------
 
-            // MEAT SELECTOR BUTTONS
+            Spacer(modifier = Modifier.height(16.dp))
+
             Text("Material Physics:", style = MaterialTheme.typography.body2, color = Color.Gray)
             Spacer(modifier = Modifier.height(8.dp))
-            
+
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceEvenly
             ) {
-                MeatButton("🥩", "Beef", probeState.selectedMeatType.value == MeatType.BEEF) { onMeatSelected(MeatType.BEEF) }
-                MeatButton("🐷", "Pork", probeState.selectedMeatType.value == MeatType.PORK) { onMeatSelected(MeatType.PORK) }
-                MeatButton("🍗", "Poultry", probeState.selectedMeatType.value == MeatType.POULTRY) { onMeatSelected(MeatType.POULTRY) }
+                MeatButton("🥩", "Beef", probeState.selectedMeatType.value == MeatType.BEEF) {
+                    onMeatSelected(MeatType.BEEF)
+                    probeState.recalculateCarryover()
+                }
+                MeatButton("🐷", "Pork", probeState.selectedMeatType.value == MeatType.PORK) {
+                    onMeatSelected(MeatType.PORK)
+                    probeState.recalculateCarryover()
+                }
+                MeatButton("🍗", "Poultry", probeState.selectedMeatType.value == MeatType.POULTRY) {
+                    onMeatSelected(MeatType.POULTRY)
+                    probeState.recalculateCarryover()
+                }
             }
 
             Spacer(modifier = Modifier.height(16.dp))
-            
-            // INSULATION TOGGLE
+
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier
@@ -152,13 +152,17 @@ fun CookingDashboard(
             ) {
                 Checkbox(
                     checked = probeState.isWrapped.value,
-                    onCheckedChange = { probeState.isWrapped.value = it },
+                    onCheckedChange = {
+                        probeState.isWrapped.value = it
+                        probeState.recalculateCarryover()
+                    },
                     colors = CheckboxDefaults.colors(checkedColor = Combustion_Red)
                 )
                 Text(
                     text = "Wrapped / Insulated (Foil)",
                     style = MaterialTheme.typography.body2,
                     fontWeight = FontWeight.Medium,
+                    color = Color.Black,
                     modifier = Modifier.padding(start = 8.dp)
                 )
             }
@@ -168,9 +172,9 @@ fun CookingDashboard(
 
 @Composable
 fun MeatButton(
-    icon: String, 
-    label: String, 
-    isSelected: Boolean, 
+    icon: String,
+    label: String,
+    isSelected: Boolean,
     onClick: () -> Unit
 ) {
     val bgColor = if (isSelected) Combustion_Yellow else Color.Transparent
@@ -188,31 +192,26 @@ fun MeatButton(
     }
 }
 
-// --- V4 PREDICTION COMPONENT ---
 @Composable
 fun V4PredictionCard(
     currentCoreTemp: Double,
     currentSurfaceTemp: Double,
+    targetTemp: Double,
     meatType: MeatMaterials
 ) {
-    // 1. Initialize the Predictor (persist across recompositions)
     val predictor = remember { PhysicsPredictor() }
-    
-    // 2. State for the display text
-    var predictionText by remember { mutableStateOf("Waiting for data...") }
-    var textColor by remember { mutableStateOf(Color.Gray) }
 
-    // 3. Run Prediction when temps change
-    LaunchedEffect(currentCoreTemp, currentSurfaceTemp, meatType) {
-        if (currentCoreTemp > 20 && currentSurfaceTemp > 20) {
-            
+    var predictionText by remember { mutableStateOf("Waiting for data...") }
+    var textColor by remember { mutableStateOf(Color.DarkGray) }
+
+    LaunchedEffect(currentCoreTemp, currentSurfaceTemp, targetTemp, meatType) {
+        if (currentCoreTemp > 20.0 && currentSurfaceTemp > 20.0) {
             predictionText = "Simulating..."
-            
-            // Run calculation on background thread
+
             val seconds = predictor.predictSecondsToDone(
                 currentCoreTemp = currentCoreTemp,
                 currentSurfaceTemp = currentSurfaceTemp,
-                targetTemp = 96.0, // Hardcoded 205°F for Brisket Test
+                targetTemp = targetTemp,
                 meatType = meatType
             )
 
@@ -223,24 +222,24 @@ fun V4PredictionCard(
                 val hours = seconds / 3600
                 val minutes = (seconds % 3600) / 60
                 predictionText = "Time to Done: ${hours}h ${minutes}m"
-                textColor = Color(0xFF006400) // Dark Green
+                textColor = Color(0xFF006400)
             }
         } else {
             predictionText = "Probe Cold / Disconnected"
+            textColor = Color.DarkGray
         }
     }
 
-    // 4. UI Layout
     Card(
         elevation = 2.dp,
-        backgroundColor = Color(0xFFF5F5F5), // Light grey background to distinguish it
+        backgroundColor = Color(0xFFF5F5F5),
         modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)
     ) {
         Column(modifier = Modifier.padding(12.dp)) {
             Text(
                 text = "V4 PHYSICS ENGINE (${meatType.displayName})",
                 style = MaterialTheme.typography.overline,
-                color = Color.Gray
+                color = Color.DarkGray
             )
             Spacer(modifier = Modifier.height(4.dp))
             Text(
@@ -252,7 +251,7 @@ fun V4PredictionCard(
                 Text(
                     text = "*Simulating Stall (Evaporative Cooling)",
                     style = MaterialTheme.typography.caption,
-                    color = Color.LightGray
+                    color = Color.DarkGray
                 )
             }
         }

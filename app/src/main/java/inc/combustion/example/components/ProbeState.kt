@@ -34,6 +34,8 @@ data class ProbeState(
     val coreTemperature: MutableState<String> = mutableStateOf(""),
     val surfaceTemperature: MutableState<String> = mutableStateOf(""),
     val ambientTemperature: MutableState<String> = mutableStateOf(""),
+    val rawCoreTemperatureC: MutableState<Double> = mutableStateOf(0.0),
+    val rawSurfaceTemperatureC: MutableState<Double> = mutableStateOf(0.0),
     val predictionState: MutableState<String> = mutableStateOf(""),
     val predictionMode: MutableState<String> = mutableStateOf(""),
     val predictionType: MutableState<String> = mutableStateOf(""),
@@ -76,8 +78,12 @@ data class ProbeState(
     val suggestedPullTemp: MutableState<String> = mutableStateOf("---")
     val selectedMeatType: MutableState<MeatType> = mutableStateOf(MeatType.BEEF)
     val isWrapped: MutableState<Boolean> = mutableStateOf(false)
-    
+
     private val predictor = CarryoverPredictor()
+    private var activeSetPointC: Double? = null
+    private var lastCoreIndex: Int = 0
+    private var lastSurfaceIndex: Int = 3
+    private var hasValidTemps: Boolean = false
     val isUploading = mutableStateOf(false)
 
     fun updateProbeState(state: Probe, downloads: Int) {
@@ -92,7 +98,7 @@ data class ProbeState(
         id.value = state.id.toString()
         isUploading.value = (state.uploadState is ProbeUploadState.ProbeUploadInProgress)
         predictionIsStale.value = state.statusNotificationsStale
-        
+
         samplePeriod.value = if(state.sessionInfo != null) String.format("%d ms", state.sessionInfo?.let { it.samplePeriod.toLong() } ) else ""
         batteryStatus.value = when(state.batteryStatus) { ProbeBatteryStatus.LOW_BATTERY -> "Low"; ProbeBatteryStatus.OK -> "Good" }
 
@@ -104,6 +110,9 @@ data class ProbeState(
         }
 
         fun fmt(v: Double?) = v?.let { String.format("%.1f", convertTemperature(it)) } ?: "---"
+
+        rawCoreTemperatureC.value = state.coreTemperatureCelsius ?: 0.0
+        rawSurfaceTemperatureC.value = state.surfaceTemperatureCelsius ?: 0.0
 
         instantRead.value = fmt(state.instantReadCelsius)
         coreTemperature.value = fmt(state.coreTemperatureCelsius)
@@ -121,18 +130,24 @@ data class ProbeState(
         predictionType.value = state.predictionType?.toString() ?: ""
         rawSetPointTemperatureC.value = state.setPointTemperatureCelsius ?: DeviceManager.MINIMUM_PREDICTION_SETPOINT_CELSIUS
         setPointTemperature.value = state.setPointTemperatureCelsius?.let { convertTemperature(it).roundToInt().toString() } ?: ""
-        
-        val currentCore = state.coreTemperatureCelsius
-        val target = state.setPointTemperatureCelsius
-        val coreIdx = state.virtualSensors.virtualCoreSensor.ordinal
-        val surfIdx = state.virtualSensors.virtualSurfaceSensor.ordinal
 
-        if (currentCore != null && target != null && coreIdx < 8 && surfIdx < 8) {
+        activeSetPointC = state.setPointTemperatureCelsius
+        lastCoreIndex = state.virtualSensors.virtualCoreSensor.ordinal
+        // VirtualSurfaceSensor enum starts at T4 (index 3 in the 8-sensor array)
+        lastSurfaceIndex = state.virtualSensors.virtualSurfaceSensor.ordinal + 3
+        hasValidTemps = (state.coreTemperatureCelsius != null && state.temperaturesCelsius != null)
+
+        recalculateCarryover()
+    }
+
+    fun recalculateCarryover() {
+        val target = activeSetPointC
+        if (hasValidTemps && target != null && lastCoreIndex in 0..7 && lastSurfaceIndex in 0..7 && lastCoreIndex < lastSurfaceIndex) {
             val pullAtC = predictor.predictPeakTemp(
                 targetTemp = target,
                 temperatures = temperaturesCelsius,
-                coreIndex = coreIdx.toInt(),
-                surfaceIndex = surfIdx.toInt(),
+                coreIndex = lastCoreIndex,
+                surfaceIndex = lastSurfaceIndex,
                 meatType = selectedMeatType.value,
                 isWrapped = isWrapped.value
             )
@@ -141,6 +156,7 @@ data class ProbeState(
             suggestedPullTemp.value = "---"
         }
     }
+
     private fun f(v: Double) = String.format("%.1f", convertTemperature(v))
     private fun convertTemperature(temperature: Double) : Double { return convertTemperatureUnits(temperature) }
 }

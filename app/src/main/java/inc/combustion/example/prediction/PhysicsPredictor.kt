@@ -3,7 +3,8 @@ package inc.combustion.example.prediction
 import android.util.Log
 import inc.combustion.framework.ble.device.MeatMaterials
 import inc.combustion.framework.ble.device.ThermalSimulator
-import kotlin.math.abs
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /**
  * The V4 Brain.
@@ -15,59 +16,46 @@ class PhysicsPredictor {
         private const val TAG = "PhysicsPredictor"
     }
 
-    /**
-     * PREDICTION ALGORITHM:
-     * 1. Initialize a "Virtual Steak" with the user's selected meat settings.
-     * 2. Set its starting temp to the *current* real probe temp.
-     * 3. Run the simulation loop roughly 1000x faster than real time.
-     * 4. Count how many seconds it takes to hit the target.
-     *
-     * @param currentCoreTemp The real T1 reading right now.
-     * @param currentSurfaceTemp The real T8 reading right now.
-     * @param targetTemp The user's goal (e.g., 96°C for brisket).
-     * @param meatType The "Prior" (e.g., BRISKET, SALMON).
-     */
-    fun predictSecondsToDone(
+    suspend fun predictSecondsToDone(
         currentCoreTemp: Double,
         currentSurfaceTemp: Double,
         targetTemp: Double,
         meatType: MeatMaterials
-    ): Long {
-        
-        // 1. Setup the Simulation (The "Digital Twin")
-        // We use the diffusivity from the USDA Prior (MeatMaterials)
-        // In the next update, we will "optimize" this value based on real data.
+    ): Long = withContext(Dispatchers.Default) {
+
+        if (currentSurfaceTemp <= targetTemp && currentCoreTemp < targetTemp) {
+            return@withContext -1L
+        }
+
         val sim = ThermalSimulator(
             diffusivity = meatType.diffusivity,
-            thicknessMeters = 0.04, // 4cm assumption (We will solve for this later)
+            thicknessMeters = 0.04,
             numNodes = 8,
-            waterContentPercent = meatType.waterContentPercent // Enables Stall Logic
+            waterContentPercent = meatType.waterContentPercent
         )
 
-        // 2. Pre-warm the simulator to the current state
-        // (Simplification: We assume the whole steak is at the current gradient. 
-        // A true PINN would fit the entire history curve here.)
         var simulatedCore = currentCoreTemp
-        var secondsElapsed: Long = 0
-        
-        // Safety Break (Don't run forever if target is impossible)
-        val maxSeconds = 24 * 60 * 60 // 24 Hours
+        var secondsElapsed = 0L
+        val maxSeconds = 24L * 60L * 60L
 
-        // 3. Fast-Forward Loop
+        // Pre-warm the simulator until virtual core reaches current real core temp
+        var warmupSteps = 0
+        while (sim.step(ambientTemp = currentSurfaceTemp, heatTransferCoefficient = 15.0)[7] < currentCoreTemp) {
+            if (++warmupSteps > maxSeconds) return@withContext -1L
+        }
+
+        // Fast-forward loop
         while (simulatedCore < targetTemp && secondsElapsed < maxSeconds) {
-            
-            // Step physics forward by 1 second
-            // We assume the Oven Temp stays constant at the current surface temp (T8)
             val newTemps = sim.step(ambientTemp = currentSurfaceTemp, heatTransferCoefficient = 15.0)
-            
-            // T1 is the core (index 7 in our 8-node model)
             simulatedCore = newTemps[7]
-            
             secondsElapsed++
         }
 
+        if (secondsElapsed >= maxSeconds) {
+            return@withContext -1L
+        }
+
         Log.d(TAG, "V4 Prediction: ${secondsElapsed / 60} minutes to reach $targetTemp°C")
-        
-        return secondsElapsed
+        secondsElapsed
     }
 }
