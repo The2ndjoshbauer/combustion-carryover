@@ -36,17 +36,10 @@ internal enum class MessageType(val value: UByte) {
     SET_PROBE_ID(0x01u),
     SET_PROBE_COLOR(0x02u),
     READ_SESSION_INFO(0x03u),
-    PROBE_LOG(0x04u),
-    SET_PREDICTION(0x05u),
-    CONFIGURE_FOOD_SAFE(0x07u),
-    RESET_FOOD_SAFE(0x08u),
-    SET_POWER_MODE(0x09u),
-    RESET_PROBE(0x0Au),
-    SET_PROBE_HIGH_LOW_ALARM(0x0Bu),
-    SILENCE_PROBE_ALARMS(0x0Cu),
-    ;
+    LOG(0x04u),
+    SET_PREDICTION(0x05u);
 
     companion object {
-        fun fromUByte(value: UByte) = entries.firstOrNull { it.value == value }
+        fun fromUByte(value: UByte) = values().firstOrNull { it.value == value }
     }
 }

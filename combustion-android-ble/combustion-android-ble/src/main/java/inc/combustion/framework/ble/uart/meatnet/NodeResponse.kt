@@ -32,7 +32,7 @@ import inc.combustion.framework.LOG_TAG
 import inc.combustion.framework.ble.getCRC16CCITT
 import inc.combustion.framework.ble.getLittleEndianUInt32At
 import inc.combustion.framework.ble.getLittleEndianUShortAt
-import inc.combustion.framework.service.DeviceManager
+import inc.combustion.framework.service.DebugSettings
 
 /**
  * Baseclass for UART response messages
@@ -41,26 +41,14 @@ internal open class NodeResponse(
     val success: Boolean,
     val requestId: UInt,
     val responseId: UInt,
-    payloadLength: UByte,
-    messageId: NodeMessage,
-) : NodeUARTMessage(
-    messageId,
-    payloadLength
-) {
-    override fun toString(): String {
-        return "RESP $messageId (REQID: ${
-            String.format(
-                "%08x",
-                requestId.toInt()
-            )
-        } RSPID: ${String.format("%08x", responseId.toInt())})"
-    }
+    val payloadLength: UByte
+) : NodeUARTMessage() {
 
     companion object {
-        const val HEADER_SIZE: UByte = 15u
+        const val HEADER_SIZE : UByte = 15u
 
         // NodeResponse messages have the leftmost bit in the 'message type' field set to 1.
-        private const val RESPONSE_TYPE_FLAG: UByte = 0x80u
+        private const val RESPONSE_TYPE_FLAG : UByte = 0x80u
 
         /**
          * Factory method for parsing a request from data.
@@ -68,11 +56,12 @@ internal open class NodeResponse(
          * @param data Raw data to parse
          * @return Instant of request if found or null if one could not be parsed from the data
          */
-        fun responseFromData(data: UByteArray): NodeUARTMessage? {
+        fun responseFromData(data : UByteArray) : NodeResponse? {
+
             // Sync bytes
             val syncBytes = data.slice(0..1)
             val expectedSync = listOf<UByte>(202u, 254u) // 0xCA, 0xFE
-            if (syncBytes != expectedSync) {
+            if(syncBytes != expectedSync) {
                 return null
             }
 
@@ -80,13 +69,13 @@ internal open class NodeResponse(
             val typeRaw = data[4]
 
             // Verify that this is a Response by checking the response type flag
-            if (typeRaw and RESPONSE_TYPE_FLAG != RESPONSE_TYPE_FLAG) {
+            if(typeRaw and RESPONSE_TYPE_FLAG != RESPONSE_TYPE_FLAG) {
                 // If that 'response type' bit isn't set, this is probably a Request.
                 return null
             }
 
-            val rawMessageType = typeRaw and RESPONSE_TYPE_FLAG.inv()
-            val messageType = NodeMessageType.fromUByte(rawMessageType)
+            val messageType = NodeMessageType.fromUByte((typeRaw and RESPONSE_TYPE_FLAG.inv()))
+                ?: return null
 
             // Request ID
             val requestId = data.getLittleEndianUInt32At(5)
@@ -106,29 +95,24 @@ internal open class NodeResponse(
             val crcDataLength = 11 + payloadLength.toInt()
 
             var crcData = data.drop(4).toUByteArray()
-            // prevent index out of bounds or negative value
-            if (crcData.size < crcDataLength) {
-                Log.w(LOG_TAG, "Invalid crc data length for response of messageType $messageType")
-                return null
-            }
             crcData = crcData.dropLast(crcData.size - crcDataLength).toUByteArray()
 
             val calculatedCRC = crcData.getCRC16CCITT()
 
-            if (crc != calculatedCRC) {
+            if(crc != calculatedCRC) {
                 return null
             }
 
             val responseLength = payloadLength.toInt() + HEADER_SIZE.toInt()
 
             // Invalid number of bytes
-            if (data.size < responseLength) {
+            if(data.size < responseLength) {
                 return null
             }
 
-            return when (messageType) {
-                NodeMessageType.PROBE_LOG -> {
-                    NodeReadProbeLogsResponse.fromData(
+            when(messageType) {
+                NodeMessageType.LOG -> {
+                    return NodeReadLogsResponse.fromData(
                         data,
                         success,
                         requestId,
@@ -138,7 +122,7 @@ internal open class NodeResponse(
                 }
 
                 NodeMessageType.SESSION_INFO -> {
-                    NodeReadSessionInfoResponse.fromData(
+                    return NodeReadSessionInfoResponse.fromData(
                         data,
                         success,
                         requestId,
@@ -148,7 +132,7 @@ internal open class NodeResponse(
                 }
 
                 NodeMessageType.SET_PREDICTION -> {
-                    NodeSetPredictionResponse.fromData(
+                    return NodeSetPredictionResponse.fromData(
                         data,
                         success,
                         requestId,
@@ -157,26 +141,8 @@ internal open class NodeResponse(
                     )
                 }
 
-                NodeMessageType.CONFIGURE_FOOD_SAFE -> {
-                    NodeConfigureFoodSafeResponse.fromData(
-                        success,
-                        requestId,
-                        responseId,
-                        payloadLength,
-                    )
-                }
-
-                NodeMessageType.RESET_FOOD_SAFE -> {
-                    NodeResetFoodSafeResponse.fromData(
-                        success,
-                        requestId,
-                        responseId,
-                        payloadLength,
-                    )
-                }
-
                 NodeMessageType.PROBE_FIRMWARE_REVISION -> {
-                    NodeReadFirmwareRevisionResponse.fromData(
+                    return NodeReadFirmwareRevisionResponse.fromData(
                         data,
                         success,
                         requestId,
@@ -186,7 +152,7 @@ internal open class NodeResponse(
                 }
 
                 NodeMessageType.PROBE_HARDWARE_REVISION -> {
-                    NodeReadHardwareRevisionResponse.fromData(
+                    return NodeReadHardwareRevisionResponse.fromData(
                         data,
                         success,
                         requestId,
@@ -196,7 +162,7 @@ internal open class NodeResponse(
                 }
 
                 NodeMessageType.PROBE_MODEL_INFORMATION -> {
-                    NodeReadModelInfoResponse.fromData(
+                    return NodeReadModelInfoResponse.fromData(
                         data,
                         success,
                         requestId,
@@ -205,87 +171,35 @@ internal open class NodeResponse(
                     )
                 }
 
-                NodeMessageType.GET_FEATURE_FLAGS -> {
-                    NodeReadFeatureFlagsResponse.fromData(
-                        data,
-                        success,
-                        requestId,
-                        responseId,
-                        payloadLength
-                    )
-                }
+// TODO: The messages types below are not currently implemented
 
-                NodeMessageType.SET_POWER_MODE -> {
-                    NodeSetPowerModeResponse.fromData(
-                        success,
-                        requestId,
-                        responseId,
-                        payloadLength,
-                    )
-                }
+//                NodeMessageType.SET_ID -> {
+//                    return NodeSetIDResponse(success, payloadLength.toInt())
+//                }
 
-                NodeMessageType.RESET_PROBE -> {
-                    NodeResetProbeResponse.fromData(
-                        success,
-                        requestId,
-                        responseId,
-                        payloadLength,
-                    )
-                }
+//                NodeMessageType.SET_COLOR -> {
+//                    return NodeSetColorResponse(
+//                        success,
+//                        payloadLength
+//                    )
+//                }
 
-                NodeMessageType.SET_PROBE_HIGH_LOW_ALARM -> {
-                    NodeSetProbeHighLowAlarmResponse.fromData(
-                        success,
-                        requestId,
-                        responseId,
-                        payloadLength,
-                    )
-                }
-
-                NodeMessageType.GAUGE_LOG -> {
-                    NodeReadGaugeLogsResponse.fromData(
-                        data,
-                        success,
-                        requestId,
-                        responseId,
-                        payloadLength,
-                    )
-                }
-
-                NodeMessageType.SET_GAUGE_HIGH_LOW_ALARM -> {
-                    NodeSetGaugeHighLowAlarmResponse.fromData(
-                        success,
-                        requestId,
-                        responseId,
-                        payloadLength,
-                    )
-                }
-
-                NodeMessageType.SILENCE_ALARMS -> {
-                    NodeSilenceAlarmsResponse.fromData(
-                        data,
-                        success,
-                        requestId,
-                        responseId,
-                        payloadLength,
-                    )
-                }
+//                NodeMessageType.READ_OVER_TEMPERATURE -> {
+//                    return NodeReadOverTemperatureResponse(
+//                        data,
+//                        success,
+//                        payloadLength
+//                    )
+//                }
 
                 else -> {
-                    // The message didn't match any of the defined types, so check if it matches a custom type
-                    return DeviceManager.instance.settings.messageTypeCallback(rawMessageType)
-                        ?.let {
-                            return GenericNodeResponse.fromData(
-                                data,
-                                success,
-                                requestId,
-                                responseId,
-                                payloadLength,
-                                it
-                            )
-                        }
+                    if ( DebugSettings.DEBUG_LOG_MESSAGE_RESPONSES ) {
+                        Log.d(LOG_TAG, "NodeResponse: responseFromData: Unknown message type: $messageType")
+                    }
+                    return null
                 }
             }
         }
     }
+
 }

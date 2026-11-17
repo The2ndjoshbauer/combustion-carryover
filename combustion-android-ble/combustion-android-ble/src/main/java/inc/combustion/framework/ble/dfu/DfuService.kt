@@ -10,8 +10,5 @@ class DfuService : DfuBaseService() {
 
     companion object {
         lateinit var notifyActivity: Class<out Activity>
-
-        fun isNotifyActivitySet(): Boolean =
-            ::notifyActivity.isInitialized
     }
 }

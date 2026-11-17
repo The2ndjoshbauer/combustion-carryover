@@ -27,29 +27,19 @@
  */
 package inc.combustion.framework.ble.uart.meatnet
 
-interface NodeMessage {
-    val value: UByte
-}
-
 /**
  * Enumerates MeatNet Node message types in Combustion's UART protocol.
  *
  * @property value byte value for message type.
  */
-internal enum class NodeMessageType(override val value: UByte) : NodeMessage {
+internal enum class NodeMessageType(val value: UByte) {
 
     SET_ID(0x1u),
     SET_COLOR(0x2u),
     SESSION_INFO(0x3u),
-    PROBE_LOG(0x4u),
+    LOG(0x4u),
     SET_PREDICTION(0x5u),
     READ_OVER_TEMPERATURE(0x6u),
-    CONFIGURE_FOOD_SAFE(0x7u),
-    RESET_FOOD_SAFE(0x8u),
-    SET_POWER_MODE(0x9u),
-    RESET_PROBE(0x0Au),
-
-    GET_FEATURE_FLAGS(0x30u),
 
     CONNECTED(0x40u),
     DISCONNECTED(0x41u),
@@ -59,16 +49,7 @@ internal enum class NodeMessageType(override val value: UByte) : NodeMessage {
     PROBE_STATUS(0X45u),
     PROBE_FIRMWARE_REVISION(0X46u),
     PROBE_HARDWARE_REVISION(0X47u),
-    PROBE_MODEL_INFORMATION(0X48u),
-    SET_PROBE_HIGH_LOW_ALARM(0x0Bu),
-    HEARTBEAT(0X49u),
-
-    GAUGE_STATUS(0x60u),
-    SET_GAUGE_HIGH_LOW_ALARM(0x61u),
-    GAUGE_LOG(0x62u),
-
-    SILENCE_ALARMS(0x0Cu),
-    ;
+    PROBE_MODEL_INFORMATION(0X48u);
 
     companion object {
         fun fromUByte(value: UByte) = values().firstOrNull { it.value == value }

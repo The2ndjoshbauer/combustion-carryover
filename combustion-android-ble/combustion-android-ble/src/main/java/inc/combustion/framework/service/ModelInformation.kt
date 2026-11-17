@@ -28,80 +28,27 @@
 
 package inc.combustion.framework.service
 
-import inc.combustion.framework.service.dfu.DfuProductType
-
-private const val SKU_MIN_LENGTH = 4
-
 data class ModelInformation(
-    val productType: CombustionProductType,
-    val dfuProductType: DfuProductType,
     val sku: String,
     val manufacturingLot: String
 ) {
-    val strippedSku: String
-        get() = sku.trimStart('0').takeIf { it.length >= SKU_MIN_LENGTH } ?: sku.takeLast(
-            SKU_MIN_LENGTH
-        )
-
-    val skuProductCode: Char?
-        get() = strippedSku.getOrNull(0)
-
-    val skuBrandCode: Char?
-        get() = strippedSku.getOrNull(1)
-
-    val skuVersionCode: Char?
-        get() = strippedSku.getOrNull(2)
-
-    val skuColorCode: Char?
-        get() = strippedSku.getOrNull(3)
 
     companion object {
         /**
-         * Converts [modelInformationString], which is the contents of the DIS Model String
-         * characteristic into a [ModelInformation] object.
-         *
-         * The model information string is different depending on the device type:
-         * - Probes are of the form "<SKU>:<manufacturing lot>".
-         * - Repeater Nodes are of the form "<Device Type> <SKU>-<manufacturing lot>" where 'Device
-         *   Type' is the plain-text name of the device ("Timer", "Charger", etc.).
+         * Converts this model information string into a [ModelInformation] object, which includes the
+         * SKU and manufacturing lot.
          */
         fun fromString(modelInformationString: String?): ModelInformation {
-            modelInformationString?.let {
-                // If the string has a colon in it, it's a probe.
-                if (it.contains(":")) {
-                    val split = it.split(":")
-
-                    return ModelInformation(
-                        productType = CombustionProductType.PROBE,
-                        dfuProductType = DfuProductType.PROBE,
-                        sku = split[0],
-                        manufacturingLot = split[1]
-                    )
+            return if(modelInformationString == null) {
+                ModelInformation("", "")
+            } else {
+                val split = modelInformationString.split(":")
+                if(split.size == 2) {
+                    ModelInformation(split[0], split[1])
                 } else {
-                    val split = it.split(" ")
-
-                    if (split.size == 2) {
-                        val skuLot = split[1].split("-")
-
-                        if (skuLot.size == 2) {
-                            val split0 = split[0]
-                            return ModelInformation(
-                                productType = CombustionProductType.fromModelString(split0),
-                                dfuProductType = DfuProductType.fromModelString(split0),
-                                sku = skuLot[0],
-                                manufacturingLot = skuLot[1]
-                            )
-                        }
-                    }
+                    ModelInformation("", "")
                 }
             }
-
-            return ModelInformation(
-                productType = CombustionProductType.UNKNOWN,
-                dfuProductType = DfuProductType.UNKNOWN,
-                sku = "",
-                manufacturingLot = ""
-            )
         }
     }
 }

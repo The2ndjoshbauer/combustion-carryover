@@ -31,69 +31,38 @@ package inc.combustion.framework.ble.uart.meatnet
 import inc.combustion.framework.ble.ProbeStatus
 import inc.combustion.framework.ble.getLittleEndianUInt32At
 import inc.combustion.framework.service.HopCount
-import inc.combustion.framework.service.OverheatingSensors
 
 internal class NodeProbeStatusRequest(
-    requestId: UInt,
-    payloadLength: UByte,
-    serialNumber: String,
+    requestId : UInt,
+    payloadLength : UByte,
+    val serialNumber: String,
     val hopCount: HopCount,
-    val probeStatus: ProbeStatus,
-) : NodeRequest(requestId, payloadLength, NodeMessageType.PROBE_STATUS, serialNumber) {
+    val probeStatus: ProbeStatus
+) : NodeRequest(requestId, payloadLength) {
 
     companion object {
-        private const val SERIAL_NUMBER_LENGTH = 4
-        private const val NETWORK_INFORMATION_LENGTH = 1
-
-        private const val MINIMUM_PAYLOAD_LENGTH =
-            SERIAL_NUMBER_LENGTH + ProbeStatus.MIN_RAW_SIZE + NETWORK_INFORMATION_LENGTH
+        const val PAYLOAD_LENGTH: UByte = 35u
 
         private val PAYLOAD_START_INDEX = HEADER_SIZE.toInt()
         private val SERIAL_NUMBER_INDEX = PAYLOAD_START_INDEX
-        private val PROBE_STATUS_INDEX = SERIAL_NUMBER_INDEX + SERIAL_NUMBER_LENGTH
+        private val PROBE_STATUS_RANGE = PAYLOAD_START_INDEX + 4 .. PAYLOAD_START_INDEX + 34
+        private val HOP_COUNT_INDEX = PAYLOAD_START_INDEX + 34
 
         /**
          * Factory function that creates an instance of this object from raw message data.
          */
-        fun fromRaw(
-            data: UByteArray,
-            requestId: UInt,
-            payloadLength: UByte,
-        ): NodeProbeStatusRequest? {
-            if (payloadLength < MINIMUM_PAYLOAD_LENGTH.toUInt()) {
+        fun fromRaw(data: UByteArray, requestId: UInt, payloadLength: UByte) : NodeProbeStatusRequest? {
+            if(payloadLength < PAYLOAD_LENGTH) {
                 return null
             }
 
+            val probeStatus: ProbeStatus = ProbeStatus.fromRawData(data.slice(PROBE_STATUS_RANGE).toUByteArray())
+                ?: return null
+
             val serialNumber: UInt = data.getLittleEndianUInt32At(SERIAL_NUMBER_INDEX)
+            val hopCount: HopCount = HopCount.fromUByte(data[HOP_COUNT_INDEX])
 
-            val probeStatusIndexEnd =
-                PROBE_STATUS_INDEX + if (payloadLength.toInt() == MINIMUM_PAYLOAD_LENGTH) {
-                    ProbeStatus.MIN_RAW_SIZE
-                } else {
-                    ProbeStatus.RAW_SIZE_INCLUDING_FOOD_SAFE
-                }
-
-            val probeStatusRange = PROBE_STATUS_INDEX until data.size
-
-            // The overheating flags are stored after the hop count for the node messages
-            // so the range is updated to take that into account
-            val overheatRangeStart = ProbeStatus.RAW_SIZE_INCLUDING_FOOD_SAFE + 1
-            val overheatRange =
-                overheatRangeStart until overheatRangeStart + OverheatingSensors.SIZE_BYTES
-
-            val probeStatus: ProbeStatus =
-                ProbeStatus.fromRawData(data.slice(probeStatusRange).toUByteArray(), overheatRange)
-                    ?: return null
-
-            val hopCount: HopCount = HopCount.fromUByte(data[probeStatusIndexEnd])
-
-            return NodeProbeStatusRequest(
-                requestId,
-                payloadLength,
-                Integer.toHexString(serialNumber.toInt()).uppercase(),
-                hopCount,
-                probeStatus,
-            )
+            return NodeProbeStatusRequest(requestId, payloadLength, Integer.toHexString(serialNumber.toInt()).uppercase(), hopCount, probeStatus)
         }
     }
 }

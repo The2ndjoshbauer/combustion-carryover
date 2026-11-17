@@ -32,13 +32,11 @@ import inc.combustion.framework.ble.putLittleEndianUInt32At
 
 internal class NodeReadHardwareRevisionRequest (
     serialNumber: String,
-    requestId: UInt? = null
 ) : NodeRequest(
     populatePayload(serialNumber),
-    NodeMessageType.PROBE_HARDWARE_REVISION,
-    requestId,
-    serialNumber,
+    NodeMessageType.PROBE_HARDWARE_REVISION
 ) {
+
     companion object {
         const val PAYLOAD_LENGTH: UByte = 4u
 

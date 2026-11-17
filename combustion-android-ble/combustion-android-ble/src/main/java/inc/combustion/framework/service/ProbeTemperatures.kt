@@ -38,37 +38,44 @@ import kotlin.random.Random
  */
 data class ProbeTemperatures(
     val values: List<Double>
-) : DeviceTemperature {
-    fun coreTemperatureCelsius(sensors: ProbeVirtualSensors): Double {
-        return when(sensors.virtualCoreSensor) {
-            ProbeVirtualSensors.VirtualCoreSensor.T1 -> values[0]
-            ProbeVirtualSensors.VirtualCoreSensor.T2 -> values[1]
-            ProbeVirtualSensors.VirtualCoreSensor.T3 -> values[2]
-            ProbeVirtualSensors.VirtualCoreSensor.T4 -> values[3]
-            ProbeVirtualSensors.VirtualCoreSensor.T5 -> values[4]
-            ProbeVirtualSensors.VirtualCoreSensor.T6 -> values[5]
-        }
-    }
+) {
+    internal val overheatingSensors: List<Int>
+        get() {
+            val overheatingSensors = mutableListOf<Int>()
 
-    fun surfaceTemperatureCelsius(sensors: ProbeVirtualSensors): Double {
-       return when(sensors.virtualSurfaceSensor) {
-            ProbeVirtualSensors.VirtualSurfaceSensor.T4 -> values[3]
-            ProbeVirtualSensors.VirtualSurfaceSensor.T5 -> values[4]
-            ProbeVirtualSensors.VirtualSurfaceSensor.T6 -> values[5]
-            ProbeVirtualSensors.VirtualSurfaceSensor.T7 -> values[6]
-        }
-    }
+            for (i in 0..1) {
+                if (this.values[i] >= OVERHEATING_T1_T2_THRESHOLD) {
+                    overheatingSensors.add(i)
+                }
+            }
 
-    fun ambientTemperatureCelsius(sensors: ProbeVirtualSensors): Double {
-        return when(sensors.virtualAmbientSensor) {
-            ProbeVirtualSensors.VirtualAmbientSensor.T5 -> values[4]
-            ProbeVirtualSensors.VirtualAmbientSensor.T6 -> values[5]
-            ProbeVirtualSensors.VirtualAmbientSensor.T7 -> values[6]
-            ProbeVirtualSensors.VirtualAmbientSensor.T8 -> values[7]
+            if (this.values[2] >= OVERHEATING_T3_THRESHOLD) {
+                overheatingSensors.add(2)
+            }
+
+            if (this.values[3] >= OVERHEATING_T4_THRESHOLD) {
+                overheatingSensors.add(3)
+            }
+
+            for (i in 4..7) {
+                if (this.values[i] >= OVERHEATING_T5_T8_THRESHOLD) {
+                    overheatingSensors.add(i)
+                }
+            }
+
+            return overheatingSensors.toList()
         }
-    }
 
     companion object {
+        /// Overheating thresholds (in degrees C) for T1 and T2
+        private const val OVERHEATING_T1_T2_THRESHOLD = 105.0
+        /// Overheating thresholds (in degrees C) for T3
+        private const val OVERHEATING_T3_THRESHOLD = 115.0
+        /// Overheating thresholds (in degrees C) for T4
+        private const val OVERHEATING_T4_THRESHOLD = 125.0
+        /// Overheating thresholds (in degrees C) for T5-T8
+        private const val OVERHEATING_T5_T8_THRESHOLD = 300.0
+
         // deserializes temperature data from reversed set of bytes
         private fun fromReversed(bytes: UByteArray): ProbeTemperatures {
             var rawCounts = mutableListOf<UShort>();
@@ -97,14 +104,6 @@ data class ProbeTemperatures(
                 temperatures.add(Random.nextDouble(45.0, 60.0))
             }
             return ProbeTemperatures(temperatures)
-        }
-
-        /**
-         * Extension function that takes a 13-bit packed temperature and converts it to a
-         * floating-point value according to the Combustion BLE specification.
-         */
-        internal fun UShort.fromRawCount(): Double {
-            return ((this.toDouble() * 0.05) - 20.0)
         }
     }
 }

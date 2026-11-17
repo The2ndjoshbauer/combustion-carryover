@@ -27,13 +27,18 @@
  */
 package inc.combustion.framework.ble.device
 
+import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
 import android.util.Log
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import com.juul.kable.*
 import inc.combustion.framework.LOG_TAG
-import inc.combustion.framework.ble.IdleMonitor
-import inc.combustion.framework.ble.JobManager
-import inc.combustion.framework.ble.scanning.DeviceAdvertisingData
+import inc.combustion.framework.ble.*
+import inc.combustion.framework.ble.scanning.*
+import inc.combustion.framework.ble.scanning.CombustionAdvertisingData
 import inc.combustion.framework.ble.scanning.DeviceScanner
 import inc.combustion.framework.service.CombustionProductType
 import inc.combustion.framework.service.DeviceConnectionState
@@ -50,19 +55,20 @@ import java.util.concurrent.atomic.AtomicInteger
  * Base class for Combustion Devices.
  *
  * @property mac Bluetooth MAC address of device.
- * @property scope Coroutine scope.
+ * @property owner Owner of the instance's coroutine scope.
  * @constructor Creates a new Device with the specified MAC.
  *
  * @param adapter Android BluetoothAdapter.
  */
-internal open class BleDevice(
+internal open class BleDevice (
     val mac: String,
-    advertisement: DeviceAdvertisingData,
-    val scope: CoroutineScope,
+    advertisement: CombustionAdvertisingData,
+    val owner: LifecycleOwner,
     adapter: BluetoothAdapter,
     val productType: CombustionProductType = advertisement.productType,
 ) {
     companion object {
+        private const val REMOTE_RSSI_POLL_RATE_MS = 2000L
         private const val IDLE_TIMEOUT_POLL_RATE_MS = 1000L
         const val DISCONNECT_TIMEOUT_MS = 500L
 
@@ -94,23 +100,25 @@ internal open class BleDevice(
         get() = mac
 
     val jobManager = JobManager()
-    private val rssiCallbacks = mutableListOf<(suspend (rssi: Int) -> Unit)>()
-    var peripheral: Peripheral = scope.peripheral(adapter.getRemoteDevice(mac)) {
-        logging {
-            /* The following enables logging in Kable
-            // engine = SystemLogEngine
-            // level = Logging.Level.Events
-            // format = Logging.Format.Multiline
-            // data = Hex
-             */
+    var remoteRssiJob: Job? = null
+    val rssiCallbacks = mutableListOf<(suspend (rssi: Int) -> Unit)>()
+    var peripheral: Peripheral =
+        owner.lifecycleScope.peripheral(adapter.getRemoteDevice(mac)) {
+            logging {
+                /* The following enables logging in Kable
+                // engine = SystemLogEngine
+                // level = Logging.Level.Events
+                // format = Logging.Format.Multiline
+                // data = Hex
+                 */
+            }
         }
-    }
 
     private val remoteRssi = AtomicInteger(0)
     private val connectionMonitor = IdleMonitor()
 
     val rssi get() = remoteRssi.get()
-    var connectionState = DeviceConnectionState.DISCONNECTED
+    var connectionState = DeviceConnectionState.OUT_OF_RANGE
 
     val isConnected = AtomicBoolean(false)
     val isDisconnected = AtomicBoolean(true)
@@ -130,7 +138,7 @@ internal open class BleDevice(
     open fun connect(numAttempts: Int = 1) {
         assert(numAttempts > 0)
 
-        scope.launch {
+        owner.lifecycleScope.launch {
             for (attempt in 1..numAttempts) {
                 Log.d(LOG_TAG, "Connecting to $mac (attempt $attempt / $numAttempts)")
                 try {
@@ -147,9 +155,7 @@ internal open class BleDevice(
     }
 
     open fun disconnect() {
-        Log.d(LOG_TAG, "BleDevice.disconnect($mac)")
-
-        scope.launch {
+        owner.lifecycleScope.launch {
             withTimeoutOrNull(DISCONNECT_TIMEOUT_MS) {
                 peripheral.disconnect()
             }
@@ -157,69 +163,66 @@ internal open class BleDevice(
     }
 
     /**
-     * Cancels all jobs for [jobKey] and unregisters callbacks. Also optionally disconnects the
-     * device if [disconnect] is true. If [jobKey] is null, all jobs are cancelled. This should be
-     * the same job key that was used when calling [observeAdvertisingPackets].
+     * Cancels all jobs and unregisters callbacks. Also optionally disconnects the device if
+     * [disconnect] is true.
      */
-    open fun finish(jobKey: String? = null, disconnect: Boolean = true) {
-        Log.d(LOG_TAG, "BleDevice.finish() for $mac; (jobKey=$jobKey, disconnect=$disconnect)")
+    open fun finish(disconnect: Boolean = true) {
         if (disconnect) {
             disconnect()
         }
 
-        jobKey?.let {
-            jobManager.cancelJobs(it)
-        } ?: jobManager.cancelJobs()
+        remoteRssiJob = null
+        jobManager.cancelJobs()
         rssiCallbacks.clear()
     }
 
-    private fun dispatchOnDefault(callback: (suspend () -> Unit)) {
+    fun dispatchOnDefault(callback: (suspend () -> Unit)) {
         // run the code on the default coroutine scope
-        scope.launch {
+        owner.lifecycleScope.launch {
             callback()
         }
     }
 
     fun observeConnectionState(callback: (suspend (newConnectionState: DeviceConnectionState) -> Unit)? = null) {
-        jobManager.addJob(scope.launch {
+        jobManager.addJob(owner.lifecycleScope.launch {
             peripheral.state.onCompletion {
                 Log.d(LOG_TAG, "Connection State Monitor Complete")
             }
-                .catch {
-                    Log.i(LOG_TAG, "Connection State Monitor Catch: $it")
+            .catch {
+                Log.i(LOG_TAG, "Connection State Monitor Catch: $it")
+            }
+            .collect { state ->
+                connectionMonitor.activity()
+
+                connectionState = when (state) {
+                    is State.Connecting -> DeviceConnectionState.CONNECTING
+                    State.Connected -> DeviceConnectionState.CONNECTED
+                    State.Disconnecting -> DeviceConnectionState.DISCONNECTING
+                    is State.Disconnected -> DeviceConnectionState.DISCONNECTED
                 }
-                .collect { state ->
-                    connectionMonitor.activity()
 
-                    connectionState = when (state) {
-                        is State.Connecting -> DeviceConnectionState.CONNECTING
-                        State.Connected -> DeviceConnectionState.CONNECTED
-                        State.Disconnecting -> DeviceConnectionState.DISCONNECTING
-                        is State.Disconnected -> DeviceConnectionState.DISCONNECTED
-                    }
-
-                    mutex.withLock {
-                        isConnected.set(connectionState == DeviceConnectionState.CONNECTED)
-                        isDisconnected.set(state is State.Disconnected)
-                    }
-
-                    callback?.let {
-                        // already being dispatched on default
-                        it(connectionState)
-                    }
+                mutex.withLock {
+                    isConnected.set(connectionState == DeviceConnectionState.CONNECTED)
+                    isDisconnected.set(state is State.Disconnected)
                 }
+
+                callback?.let {
+                    // already being dispatched on default
+                    it(connectionState)
+                }
+            }
         })
     }
 
     fun observeOutOfRange(timeout: Long, callback: (suspend () -> Unit)? = null) {
-        jobManager.addJob(scope.launch(Dispatchers.IO) {
-            while (isActive) {
+        jobManager.addJob(owner.lifecycleScope.launch(Dispatchers.IO) {
+            while(isActive) {
                 delay(IDLE_TIMEOUT_POLL_RATE_MS)
                 val isIdle = connectionMonitor.isIdle(timeout)
 
-                if (isIdle) {
+                if(isIdle) {
                     mutex.withLock {
-                        connectionState = when (connectionState) {
+                        connectionState = when(connectionState) {
                             DeviceConnectionState.ADVERTISING_NOT_CONNECTABLE -> DeviceConnectionState.OUT_OF_RANGE
                             DeviceConnectionState.ADVERTISING_CONNECTABLE -> DeviceConnectionState.OUT_OF_RANGE
                             DeviceConnectionState.DISCONNECTED -> DeviceConnectionState.OUT_OF_RANGE
@@ -239,87 +242,102 @@ internal open class BleDevice(
         })
     }
 
-    fun observeRemoteRssi(callback: (suspend (rssi: Int) -> Unit)? = null) {
-        // Maintain a list of objects that are observing RSSI updates for this device. They'll be
-        // called back when the RSSI is updated in advertising data.
+    fun observeRemoteRssi(@Suppress("UNUSED_PARAMETER") callback: (suspend (rssi: Int) -> Unit)? = null) {
+        /*
+        // maintain a list of objects that are observing RSSI updates for this device.
         callback?.let {
             rssiCallbacks.add(it)
         }
-    }
 
-    fun observeAdvertisingPackets(
-        jobKey: String?,
-        filter: (advertisement: DeviceAdvertisingData) -> Boolean,
-        callback: (suspend (advertisement: DeviceAdvertisingData) -> Unit)? = null
-    ) {
-        jobManager.addJob(
-            key = jobKey,
-            job = scope.launch(
-                CoroutineName("${jobKey}.observeAdvertisingPackets") + Dispatchers.IO
-            ) {
-                DeviceScanner.advertisements.filter {
-                    // call the passed in filter condition to determine if the packet should be filtered or passed along.
-                    filter(it)
-                }.collect {
-                    mutex.withLock {
-                        handleAdvertisement(it)
-                    }
+        // but only need one long running thread for this device to read the RSSI while connected.
+        if(remoteRssiJob == null) {
+            val job = owner.lifecycleScope.launch(Dispatchers.IO) {
+                var exceptionCount = 0;
+                while(isActive) {
+                    if(isConnected.get()) {
+                        try {
+                            // TODO: DROID-106
+                            //
+                            remoteRssi.set(peripheral.rssi())
+                            exceptionCount = 0;
+                        } catch (e: Exception) {
+                            exceptionCount++
+                            Log.w(LOG_TAG, "Exception while reading remote RSSI: $exceptionCount\n${e.stackTrace}")
+                        }
 
-                    connectionMonitor.activity()
-
-                    callback?.let { clientCallback ->
-                        dispatchOnDefault {
-                            clientCallback(it)
+                        when {
+                            exceptionCount < 5 -> {
+                                rssiCallbacks.forEach {
+                                    dispatchOnDefault {
+                                        it(remoteRssi.get())
+                                    }
+                                }
+                            }
+                            else -> {
+                                peripheral.disconnect()
+                            }
                         }
                     }
-                }
-            }.also { job ->
-                job.invokeOnCompletion {
-                    Log.d(LOG_TAG, "observeAdvertisingPackets() for $jobKey complete ($it)")
+                    delay(REMOTE_RSSI_POLL_RATE_MS)
                 }
             }
-        )
+            remoteRssiJob = job
+            jobManager.addJob(job)
+        }
+         */
+    }
+
+    fun observeAdvertisingPackets(filter: (advertisement: CombustionAdvertisingData) -> Boolean, callback: (suspend (advertisement: CombustionAdvertisingData) -> Unit)? = null) {
+        jobManager.addJob(owner.lifecycleScope.launch(Dispatchers.IO) {
+            DeviceScanner.advertisements.filter {
+
+                // call the passed in filter condition to determine if the packet should be filtered or passed along.
+                filter(it)
+
+            }.collect {
+                mutex.withLock {
+                    handleAdvertisement(it)
+                }
+
+                connectionMonitor.activity()
+
+                callback?.let { clientCallback ->
+                    dispatchOnDefault {
+                        clientCallback(it)
+                    }
+                }
+            }
+        })
     }
 
     protected suspend fun readSerialNumberCharacteristic(): String? =
-        readCharacteristic(
-            SERIAL_NUMBER_CHARACTERISTIC,
-            "remote serial number"
-        )?.toString(Charsets.UTF_8)
+        readCharacteristic(SERIAL_NUMBER_CHARACTERISTIC, "remote serial number")?.toString(Charsets.UTF_8)
 
     protected suspend fun readFirmwareVersionCharacteristic(): String? =
-        readCharacteristic(
-            FW_VERSION_CHARACTERISTIC,
-            "remote firmware version"
-        )?.toString(Charsets.UTF_8)
+        readCharacteristic(FW_VERSION_CHARACTERISTIC, "remote firmware version")?.toString(Charsets.UTF_8)
 
     protected suspend fun readHardwareRevisionCharacteristic(): String? =
-        readCharacteristic(HW_REVISION_CHARACTERISTIC, "remote hardware revision")?.toString(
-            Charsets.UTF_8
-        )
+        readCharacteristic(HW_REVISION_CHARACTERISTIC, "remote hardware revision")?.toString(Charsets.UTF_8)
 
     protected suspend fun readModelNumberCharacteristic(): String? =
         readCharacteristic(MODEL_INFO_CHARACTERISTIC, "remote model info")?.toString(Charsets.UTF_8)
 
     private suspend fun readCharacteristic(
         characteristic: Characteristic,
-        description: String? = null
-    ): ByteArray? {
+        description: String? = null): ByteArray?
+    {
         var bytes: ByteArray? = null
         withContext(Dispatchers.IO) {
             try {
                 bytes = peripheral.read(characteristic)
             } catch (e: Exception) {
-                Log.w(
-                    LOG_TAG,
-                    "Exception while reading ${description ?: characteristic}: \n${e.stackTrace}"
-                )
+                Log.w(LOG_TAG, "Exception while reading ${description ?: characteristic}: \n${e.stackTrace}")
             }
         }
         return bytes
     }
 
-    private fun handleAdvertisement(advertisement: DeviceAdvertisingData) {
+    private fun handleAdvertisement(advertisement: CombustionAdvertisingData) {
         remoteRssi.set(advertisement.rssi)
         isInRange.set(true)
         isConnectable.set(advertisement.isConnectable)
@@ -327,22 +345,16 @@ internal open class BleDevice(
         // the probe continues to advertise even while a BLE connection is
         // established.  determine if the device is currently advertising as
         // connectable or not.
-        val advertisingState = when (advertisement.isConnectable) {
+        val advertisingState = when(advertisement.isConnectable) {
             true -> DeviceConnectionState.ADVERTISING_CONNECTABLE
             else -> DeviceConnectionState.ADVERTISING_NOT_CONNECTABLE
-        }
-
-        rssiCallbacks.toList().forEach {
-            dispatchOnDefault {
-                it(remoteRssi.get())
-            }
         }
 
         // if the device is advertising as connectable, advertising as non-connectable,
         // currently disconnected, or currently out of range then it's new state is the
         // advertising state determined above. otherwise, (connected, connecting or
         // disconnecting) the state is unchanged by the advertising packet.
-        connectionState = when (connectionState) {
+        connectionState = when(connectionState) {
             DeviceConnectionState.ADVERTISING_CONNECTABLE -> advertisingState
             DeviceConnectionState.ADVERTISING_NOT_CONNECTABLE -> advertisingState
             DeviceConnectionState.OUT_OF_RANGE -> advertisingState

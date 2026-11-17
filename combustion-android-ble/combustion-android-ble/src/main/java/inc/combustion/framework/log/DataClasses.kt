@@ -49,16 +49,19 @@ internal data class RecordRange(val minSeq: UInt, val maxSeq: UInt) {
  * Upload progress data object
  *
  * @property transferred number of records received
+ * @property drops number of dropped records
  * @property expected number of records expected
  */
-internal data class UploadProgress(val transferred: UInt, val expected: UInt, val requested: UInt) {
+internal data class UploadProgress(val transferred: UInt, val drops: UInt, val expected: UInt) {
     companion object {
         val NULL_UPLOAD_PROGRESS = UploadProgress(0u, 0u, 0u)
     }
 
+    val isComplete: Boolean get() { return (transferred + drops) == expected }
+
     fun toProbeUploadState() : ProbeUploadState {
         return ProbeUploadState.ProbeUploadInProgress(
-            transferred, expected, requested
+            transferred, drops, expected
         )
     }
 }
@@ -70,16 +73,24 @@ internal data class UploadProgress(val transferred: UInt, val expected: UInt, va
  * @property sessionMinSequence Starting sequence number.
  * @property sessionMaxSequence Max sequence number.
  * @property totalRecords Total number of transferred record.
+ * @property logResponseDropCount Number of dropped log response packets.
+ * @property deviceStatusDropCount Number of dropped device status packets.
+ * @property droppedRecords Total number of dropped logs.
  */
 internal data class SessionStatus(
     val id: String,
     val sessionMinSequence: UInt,
     val sessionMaxSequence: UInt,
     val totalRecords: UInt,
+    val logResponseDropCount: UInt,
+    val deviceStatusDropCount: UInt,
+    val droppedRecords: List<UInt>
 ) {
     companion object {
         val NULL_SESSION_STATUS = SessionStatus(
-            "", 0u, 0u, 0u,
+            "", 0u, 0u,
+            0u, 0u, 0u,
+            listOf()
         )
     }
 
@@ -88,12 +99,16 @@ internal data class SessionStatus(
             sessionMinSequence,
             sessionMaxSequence,
             totalRecords,
+            logResponseDropCount,
+            deviceStatusDropCount
         )
     }
 
     override fun toString(): String {
-        return String.format("%s: %d - %d [%d]",
-            id, sessionMinSequence.toInt(), sessionMaxSequence.toInt(), totalRecords.toInt()
-        )
+        return String.format("%s: %d - %d [%d] [%d] [%d] [%d]",
+            id, sessionMinSequence.toInt(), sessionMaxSequence.toInt(),
+            totalRecords.toInt(), deviceStatusDropCount.toInt(),
+            logResponseDropCount.toInt(),
+            droppedRecords.size)
     }
 }

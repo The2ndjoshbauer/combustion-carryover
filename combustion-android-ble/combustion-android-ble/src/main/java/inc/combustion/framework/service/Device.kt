@@ -28,9 +28,7 @@
 
 package inc.combustion.framework.service
 
-import inc.combustion.framework.Constants.MIN_RSSI
 import inc.combustion.framework.ble.device.DeviceID
-import inc.combustion.framework.service.dfu.DfuProductType
 
 /**
  * Representation of a Combustion device.
@@ -50,14 +48,9 @@ data class Device(
     val fwVersion: FirmwareVersion? = null,
     val hwRevision: String? = null,
     val modelInformation: ModelInformation? = null,
-    val rssi: Int = MIN_RSSI,
+    val rssi: Int = 0,
     val productType: CombustionProductType? = null,
     val connectionState: DeviceConnectionState = DeviceConnectionState.DISCONNECTED,
 ) {
     val id: DeviceID = mac
-
-    val dfuProductType: DfuProductType
-        get() = modelInformation?.dfuProductType
-            ?: productType?.let { DfuProductType.fromCombustionProductType(it) }
-            ?: DfuProductType.UNKNOWN
 }

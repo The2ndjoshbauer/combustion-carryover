@@ -28,50 +28,22 @@
 
 package inc.combustion.framework.service
 
-import inc.combustion.framework.service.dfu.DfuProductType
-import kotlinx.serialization.Serializable
-
-@Serializable
 enum class CombustionProductType(val type: UByte) {
     UNKNOWN(0x00u),
     PROBE(0x01u),
-    NODE(0x02u),
-    GAUGE(0x03u);
+    DISPLAY(0x02u),
+    CHARGER(0x03u);
 
     companion object {
-        fun fromUByte(byte: UByte): CombustionProductType {
-            return when (byte) {
-                PROBE.type -> PROBE
-                NODE.type -> NODE
-                GAUGE.type -> GAUGE
+        fun fromUByte(byte: UByte) : CombustionProductType {
+            return when(byte.toUInt()) {
+                0x01u -> PROBE
+                0x02u -> DISPLAY
+                0x03u -> CHARGER
                 else -> UNKNOWN
             }
         }
-
-        /**
-         * Returns the [CombustionProductType] according to the string in the DIS Model Number
-         * characteristic.
-         */
-        fun fromModelString(model: String): CombustionProductType {
-            return when (model) {
-                "Timer" -> NODE
-                "Charger" -> NODE
-                "" -> PROBE
-                "Gauge" -> GAUGE
-                else -> UNKNOWN
-            }
-        }
-
-        fun fromDfuProductType(productType: DfuProductType): CombustionProductType =
-            when (productType) {
-                DfuProductType.PROBE -> PROBE
-                DfuProductType.GAUGE -> GAUGE
-                DfuProductType.CHARGER, DfuProductType.CHARGER -> NODE
-                else -> UNKNOWN
-            }
     }
 
-    val isRepeater: Boolean get() = (this != PROBE) && (this != UNKNOWN)
-
-    fun isType(type: CombustionProductType) = this == type
+    val isRepeater: Boolean get() = this != PROBE
 }

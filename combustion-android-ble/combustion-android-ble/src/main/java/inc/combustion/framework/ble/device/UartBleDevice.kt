@@ -29,118 +29,62 @@ package inc.combustion.framework.ble.device
 
 import android.bluetooth.BluetoothAdapter
 import android.util.Log
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.lifecycleScope
 import com.juul.kable.WriteType
 import com.juul.kable.characteristicOf
 import inc.combustion.framework.LOG_TAG
-import inc.combustion.framework.ble.scanning.DeviceAdvertisingData
-import inc.combustion.framework.service.DebugSettings
-import kotlinx.coroutines.*
-import kotlinx.coroutines.flow.catch
-import kotlinx.coroutines.flow.onCompletion
+import inc.combustion.framework.ble.scanning.CombustionAdvertisingData
+import inc.combustion.framework.service.*
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.launch
 import java.util.concurrent.atomic.AtomicBoolean
 
 internal open class UartBleDevice(
     mac: String,
-    advertisement: DeviceAdvertisingData,
-    scope: CoroutineScope,
+    advertisement: CombustionAdvertisingData,
+    owner: LifecycleOwner,
     adapter: BluetoothAdapter
-) : DeviceInformationBleDevice(mac, advertisement, scope, adapter) {
+) : DeviceInformationBleDevice(mac, advertisement, owner, adapter) {
 
     class MessageCompletionHandler {
         private val waiting = AtomicBoolean(false)
         private var completionCallback: ((Boolean, Any?) -> Unit)? = null
         private var job: Job? = null
 
-        var requestId: UInt? = null
-            private set
-
-        val isWaiting: Boolean
-            get() {
-                return waiting.get()
-            }
-
-        // Returns true if the message reqId matched or the callback was called
-        fun handled(result: Boolean, data: Any?, reqId: UInt? = null): Boolean {
-            var matched = false
-            // if we are waiting for a specific request id
-            requestId?.let {
-                // and we weren't called with the request id we are looking for
-                if (it == reqId) {
-                    matched = true
-                } else {
-                    return matched
-                }
-            }
-
+        fun handled(result: Boolean, data: Any?) {
             job?.cancel()
             waiting.set(false)
-            // Make a local copy of the completion callback and then cleanup the state
-            // This allows for sending additional messages from within the callback
-            val localCallback = completionCallback
-            cleanup()
-
-            localCallback?.let {
+            completionCallback?.let {
                 it(result, data)
-                matched = true
             }
-
-            return matched
+            completionCallback = null
         }
 
-        fun wait(
-            scope: CoroutineScope,
-            duration: Long,
-            reqId: UInt? = null,
-            callback: ((Boolean, Any?) -> Unit)?,
-        ) {
-            requestId?.let {
-                // if we are waiting for a specific request id and asked to wait again, then
-                // we callback to the caller with an error (the current wait has not completed).
-                if (it == reqId) {
-                    callback?.let { it(false, null) }
-                    return
-                }
-
-                // otherwise, cancel the current wait and start a new wait with the new request.
-                cancel()
-            }
-
-            // if we are already waiting for a completion callback, then we callback to the
-            // caller with an error (the current wait has not completed).
+        fun wait(owner: LifecycleOwner, duration: Long, callback: ((Boolean, Any?) -> Unit)?) {
             completionCallback?.let {
                 callback?.let { it(false, null) }
                 return
             }
 
-            if (waiting.get()) {
+            if(waiting.get()) {
                 callback?.let { it(false, null) }
                 return
             }
 
             waiting.set(true)
             completionCallback = callback
-            requestId = reqId
 
-            job = scope.launch {
+            job = owner.lifecycleScope.launch {
                 delay(duration)
-                if (waiting.getAndSet(false)) {
-                    withContext(Dispatchers.Main) {
-                        callback?.let { it(false, null) }
-                    }
-                    cleanup()
+                if(waiting.getAndSet(false)) {
+                    callback?.let { it(false, null) }
+                    completionCallback = null
                 }
             }
-        }
-
-        fun cancel() {
-            job?.cancel()
-            waiting.set(false)
-            cleanup()
-        }
-
-        private fun cleanup() {
-            completionCallback = null
-            requestId = null
         }
     }
 
@@ -158,12 +102,12 @@ internal open class UartBleDevice(
     var isInDfuMode: Boolean = false
 
     fun writeUartCharacteristic(data: ByteArray) {
-        if (isConnected.get()) {
-            scope.launch(Dispatchers.IO) {
+        if(isConnected.get()) {
+            owner.lifecycleScope.launch(Dispatchers.IO) {
                 try {
                     peripheral.write(UART_RX_CHARACTERISTIC, data, WriteType.WithoutResponse)
-                } catch (e: Exception) {
-                    Log.w(LOG_TAG, "UART-TX: Unable to write to RX characteristic.", e)
+                } catch(e: Exception)  {
+                    Log.w(LOG_TAG, "UART-TX: Unable to write to RX characteristic.")
                 }
             }
         }

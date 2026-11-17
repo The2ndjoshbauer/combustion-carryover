@@ -28,30 +28,22 @@
 
 package inc.combustion.framework.ble.uart.meatnet
 
-import android.util.Log
 import inc.combustion.framework.ble.getLittleEndianUInt32At
 
 internal class NodeSetPredictionResponse (
+    val serialNumber: String,
     success: Boolean,
     requestId: UInt,
     responseId: UInt,
     payloadLength: UByte
-) : NodeResponse(
-    success,
-    requestId,
-    responseId,
-    payloadLength,
-    NodeMessageType.SET_PREDICTION
-) {
-    override fun toString(): String {
-        return "${super.toString()} $success"
-    }
+) : NodeResponse(success, requestId, responseId, payloadLength) {
 
     companion object {
-        const val PAYLOAD_LENGTH: UByte = 0u
+        // payload is 4 bytes = serial number (4 bytes)
+        const val PAYLOAD_LENGTH: UByte = 4u
 
         fun fromData(
-            @Suppress("UNUSED_PARAMETER") payload: UByteArray,
+            payload: UByteArray,
             success: Boolean,
             requestId: UInt,
             responseId: UInt,
@@ -62,7 +54,10 @@ internal class NodeSetPredictionResponse (
                 return null
             }
 
+            val serial = payload.getLittleEndianUInt32At(HEADER_SIZE.toInt()).toString(radix = 16).uppercase()
+
             return NodeSetPredictionResponse(
+                serial,
                 success,
                 requestId,
                 responseId,

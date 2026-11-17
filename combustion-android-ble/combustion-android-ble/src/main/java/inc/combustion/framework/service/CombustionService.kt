@@ -27,27 +27,21 @@
  */
 package inc.combustion.framework.service
 
-import android.annotation.SuppressLint
 import android.app.Activity
 import android.app.Notification
 import android.app.NotificationManager
-import android.app.Service
 import android.bluetooth.BluetoothManager
-import android.content.Context
-import android.content.Intent
-import android.content.ServiceConnection
-import android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
-import android.net.Uri
+import android.content.*
 import android.os.Binder
 import android.os.Build
 import android.os.IBinder
 import android.util.Log
+import androidx.lifecycle.LifecycleService
 import inc.combustion.framework.LOG_TAG
-import inc.combustion.framework.ble.NetworkManager
+import inc.combustion.framework.ble.*
 import inc.combustion.framework.ble.dfu.DfuManager
 import inc.combustion.framework.log.LogManager
-import inc.combustion.framework.service.dfu.DfuProductType
-import kotlinx.coroutines.*
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import java.util.concurrent.ThreadLocalRandom
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.random.asKotlinRandom
@@ -56,49 +50,39 @@ import kotlin.random.asKotlinRandom
  * Android Service for managing Combustion Inc. Predictive Thermometers
  */
 @ExperimentalCoroutinesApi
-class CombustionService : Service() {
+class CombustionService : LifecycleService() {
 
-    private val binder = CombustionServiceBinder(this)
-
-    private lateinit var serviceScope: CoroutineScope
+    private val binder = CombustionServiceBinder()
 
     internal var dfuManager: DfuManager? = null
 
     internal companion object {
         private var dfuNotificationTarget: Class<out Activity?>? = null
-        private val serviceStartRequested = AtomicBoolean(false)
-        private var latestFirmware: Map<DfuProductType, Uri> = emptyMap()
-        var serviceNotification: Notification? = null
+        private val serviceIsStarted = AtomicBoolean(false)
+        private val serviceIsStopping = AtomicBoolean(false)
+        var serviceNotification : Notification? = null
         var notificationId = 0
-        var settings: DeviceManager.Settings = DeviceManager.Settings()
-        private var onServiceStartedCallback: (() -> Unit)? = null
+        lateinit var settings: DeviceManager.Settings
 
         fun start(
             context: Context,
             notification: Notification?,
             dfuNotificationTarget: Class<out Activity?>?,
             serviceSettings: DeviceManager.Settings = DeviceManager.Settings(),
-            latestFirmware: Map<DfuProductType, Uri>,
-            onServiceStartedCallback: (() -> Unit)?,
         ): Int {
-            if (serviceStartRequested.compareAndSet(false, true)) {
+            if(!serviceIsStarted.get() || serviceIsStopping.get()) {
                 settings = serviceSettings
                 serviceNotification = notification
                 this.dfuNotificationTarget = dfuNotificationTarget
-                this.latestFirmware = latestFirmware
-                this.onServiceStartedCallback = onServiceStartedCallback
                 notificationId = ThreadLocalRandom.current().asKotlinRandom().nextInt()
                 Intent(context, CombustionService::class.java).also { intent ->
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                        serviceNotification?.let {
-                            context.startForegroundService(intent)
-                        } ?: run {
-                            context.startService(intent)
-                        }
+                        context.startForegroundService(intent)
                     } else {
                         context.startService(intent)
                     }
                 }
+                serviceIsStopping.set(false)
             }
 
             return notificationId
@@ -106,42 +90,43 @@ class CombustionService : Service() {
 
         fun bind(context: Context, connection: ServiceConnection) {
             Intent(context, CombustionService::class.java).also { intent ->
-                val flags = BIND_AUTO_CREATE
+                val flags = Context.BIND_AUTO_CREATE
                 context.bindService(intent, connection, flags)
             }
         }
 
         fun stop(context: Context) {
+            serviceIsStopping.set(true)
             Intent(context, CombustionService::class.java).also { intent ->
                 context.stopService(intent)
             }
         }
     }
 
+    inner class CombustionServiceBinder : Binder() {
+        fun getService(): CombustionService = this@CombustionService
+    }
+
     private fun startForeground() {
         serviceNotification?.let {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                startForeground(notificationId, it, FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
-            } else {
-                startForeground(notificationId, it)
-            }
+            startForeground(notificationId, serviceNotification)
         }
     }
 
     private fun stopForeground() {
         serviceNotification?.let {
-            val service = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+            val service = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             service.cancel(notificationId)
             stopForeground(STOP_FOREGROUND_REMOVE)
         }
     }
 
-    override fun onCreate() {
-        super.onCreate()
-        serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        super.onStartCommand(intent, flags, startId)
 
-        val bluetooth = getSystemService(BLUETOOTH_SERVICE) as BluetoothManager
-        if (bluetooth.adapter != null) {
+        val bluetooth = getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
+
+        if(bluetooth.adapter != null) {
             // Note: Older versions of Android running on emulator (e.g. Pixel 4 API 29) do not
             // emulate a Bluetooth adapter.  In this case, the BLE isn't functional.  This is consistent
             // with our manifest file requiring BLE.  So we check for null, and do not initialize the
@@ -151,54 +136,38 @@ class CombustionService : Service() {
             // Newer versions of Android running on emulator (e.g. Pixel XL API 33) do emulate a Bluetooth adapter.
 
             // Initialize Network Manager
-            NetworkManager.initialize(
-                scope = serviceScope,
-                context = applicationContext,
-                adapter = bluetooth.adapter,
-                settings = settings,
-            )
+            NetworkManager.initialize(this, bluetooth.adapter, settings)
 
             // Allocate DFU Manager
-            if (dfuManager == null) {
-                dfuManager =
-                    DfuManager(
-                        serviceScope,
-                        applicationContext,
-                        bluetooth.adapter,
-                        dfuNotificationTarget,
-                        latestFirmware
-                    )
+            if(dfuManager == null) {
+                dfuManager = DfuManager(this, this, bluetooth.adapter, dfuNotificationTarget)
             }
 
             // setup receiver to see when platform Bluetooth state changes
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                registerReceiver(
-                    NetworkManager.instance.bluetoothAdapterStateReceiver,
-                    NetworkManager.instance.bluetoothAdapterStateIntentFilter,
-                    RECEIVER_NOT_EXPORTED,
-                )
-            } else {
-                @SuppressLint("UnspecifiedRegisterReceiverFlag")
-                registerReceiver(
-                    NetworkManager.instance.bluetoothAdapterStateReceiver,
-                    NetworkManager.instance.bluetoothAdapterStateIntentFilter,
-                )
-            }
+            registerReceiver(
+                NetworkManager.instance.bluetoothAdapterStateReceiver,
+                NetworkManager.instance.bluetoothAdapterStateIntentFilter
+            )
         }
 
-        onServiceStartedCallback?.invoke()
-        onServiceStartedCallback = null
+        startForeground()
+
+        serviceIsStarted.set(true)
 
         Log.d(LOG_TAG, "Combustion Android Service Started...")
-    }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        super.onStartCommand(intent, flags, startId)
-        startForeground()
         return START_NOT_STICKY
     }
 
-    override fun onBind(intent: Intent): IBinder = binder
+    override fun onBind(intent: Intent): IBinder {
+        super.onBind(intent)
+        return binder
+    }
+
+    override fun onUnbind(intent: Intent?): Boolean {
+        stopForeground()
+        return super.onUnbind(intent)
+    }
 
     override fun onDestroy() {
         // stop the service notification
@@ -210,21 +179,22 @@ class CombustionService : Service() {
             // is initialized.  In that case, this line will throw.  We do our best effort
             // here to cleanup.  If we aren't able to get the instance, then there isn't
             // anything to cleanup so, just catch the exception.
-            val networkManager = NetworkManager.instance
-            networkManager.finish()
-            unregisterReceiver(networkManager.bluetoothAdapterStateReceiver)
+            val manager = NetworkManager.instance
+
+            manager.clearDevices()
+            manager.finish()
+            unregisterReceiver(manager.bluetoothAdapterStateReceiver)
         } catch (e: Exception) {
             Log.w(LOG_TAG, "Unable to cleanup NetworkManager ${e.stackTrace}")
         }
 
         LogManager.instance.clear()
 
-        serviceScope.cancel()
-        serviceStartRequested.set(false)
+        serviceIsStarted.set(false)
+        serviceIsStopping.set(false)
 
         Log.d(LOG_TAG, "Combustion Android Service Destroyed...")
         super.onDestroy()
-        binder.clear()
     }
 
     internal fun startDfuMode() {
@@ -235,17 +205,5 @@ class CombustionService : Service() {
     internal fun stopDfuMode() {
         dfuManager?.stop()
         NetworkManager.instance.stopDfuMode()
-    }
-}
-
-@OptIn(ExperimentalCoroutinesApi::class)
-internal class CombustionServiceBinder(
-    private var service: CombustionService?,
-) : Binder() {
-
-    fun getService(): CombustionService? = service
-
-    fun clear() {
-        service = null
     }
 }

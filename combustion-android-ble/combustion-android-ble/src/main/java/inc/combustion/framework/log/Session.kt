@@ -29,20 +29,12 @@ package inc.combustion.framework.log
 
 import android.util.Log
 import inc.combustion.framework.LOG_TAG
-import inc.combustion.framework.ble.GaugeStatus
-import inc.combustion.framework.ble.NOT_IMPLEMENTED
 import inc.combustion.framework.ble.ProbeStatus
-import inc.combustion.framework.ble.SpecializedDeviceStatus
 import inc.combustion.framework.ble.uart.LogResponse
-import inc.combustion.framework.ble.uart.ProbeLogResponse
-import inc.combustion.framework.ble.uart.meatnet.NodeReadGaugeLogsResponse
 import inc.combustion.framework.service.DebugSettings
-import inc.combustion.framework.service.LoggedDataPoint
-import inc.combustion.framework.service.LoggedGaugeDataPoint
 import inc.combustion.framework.service.LoggedProbeDataPoint
 import inc.combustion.framework.service.SessionInformation
-import java.util.Date
-import java.util.concurrent.ConcurrentSkipListMap
+import java.util.*
 
 /**
  * Log transfer sessions and buffer instance for a probe.
@@ -53,31 +45,55 @@ import java.util.concurrent.ConcurrentSkipListMap
  * @param sessionInfo Session information from probe
  */
 internal class Session(
-    //<L : LoggedDataPoint>(
     private val serialNumber: String,
     private val sessionInfo: SessionInformation,
     deviceStatusMaxSequence: UInt,
 ) {
 
     companion object {
-        const val STALE_LOG_REQUEST_PACKET_COUNT = 2
-        const val PRINT_LOG_SEQUENCE_GAPS = false
+        /**
+         * If > than this threshold of device status packets are received, then
+         * consider the log request stalled.
+         */
+        const val STALE_LOG_REQUEST_PACKET_COUNT = 3u
+        const val MAX_DROPPED_PACKET_HANDLING = 5000
     }
 
-    private val _logs: ConcurrentSkipListMap<UInt, LoggedDataPoint> = ConcurrentSkipListMap()
+    private val _logs: SortedMap<UInt, LoggedProbeDataPoint> = sortedMapOf()
     private var nextExpectedRecord = UInt.MAX_VALUE
     private var nextExpectedDeviceStatus = UInt.MAX_VALUE
     private var totalExpected = 0u
     private var transferCount = 0u
-    private var totalRequested = 0u
+    private var logResponseDropCount = 0u
+    private var deviceStatusDropCount = 0u
     private var staleLogRequestCount = STALE_LOG_REQUEST_PACKET_COUNT
-    private val minSequenceNumber: UInt get() = if (isEmpty) 0u else _logs.firstKey()
-    private val maxSequenceNumber: UInt get() = if (isEmpty) 0u else _logs.lastKey()
+    private val minSequenceNumber: UInt get() = if(isEmpty) 0u else _logs.firstKey()
+    private val maxSequenceNumber: UInt get() = if(isEmpty) 0u else _logs.lastKey()
 
     val id = sessionInfo.sessionID
     val samplePeriod = sessionInfo.samplePeriod
     val isEmpty get() = _logs.isEmpty()
     val startTime: Date
+    val droppedRecords = mutableListOf<UInt>()
+
+    val maxSequentialSequenceNumber: UInt get() {
+        val iterator = _logs.keys.sorted().iterator()
+
+        if(!iterator.hasNext())
+            return 0u
+
+        var lastKey = iterator.next()
+        while(iterator.hasNext()) {
+            val key = iterator.next()
+            if (lastKey >= key - 1u) {
+                lastKey = key
+            } else {
+                break
+            }
+        }
+
+        return lastKey
+    }
 
     init {
         val milliSinceStart = (sessionInfo.samplePeriod * deviceStatusMaxSequence).toLong()
@@ -86,10 +102,11 @@ internal class Session(
 
     val logRequestIsStalled: Boolean
         get() {
-            return staleLogRequestCount <= 0
+            val progress = UploadProgress(transferCount, logResponseDropCount, totalExpected)
+            return !progress.isComplete && (staleLogRequestCount == 0u)
         }
 
-    val dataPoints: List<LoggedDataPoint>
+    val dataPoints: List<LoggedProbeDataPoint>
         get() {
             return _logs.values.toList()
 
@@ -100,205 +117,145 @@ internal class Session(
             return _logs.values.size
         }
 
-    fun missingRecordRange(start: UInt, end: UInt): RecordRange? {
-        var lowerBound: UInt? = null
-
-        for (sequence in start..end) {
-            if (!_logs.containsKey(sequence)) {
-                lowerBound = sequence
-                break
-            }
-        }
-
-        lowerBound?.let { lower ->
-            var upper: UInt? = null
-
-            if (lower < end) {
-                for (sequence in ((lower + 1u)..end).reversed()) {
-                    if (!_logs.containsKey(sequence)) {
-                        upper = sequence
-                        break
-                    }
-                }
-            }
-
-            val upperBound = upper ?: (lower + 1u)
-
-            return RecordRange(lower, upperBound)
-        }
-
-        // no lower bound implies no missing records
-        return null
-    }
-
-    fun logRequestStartSequence(deviceMinSequence: UInt): UInt {
-        if (deviceMinSequence < minSequenceNumber) {
-            return deviceMinSequence
-        }
-
-        val iterator = _logs.keys.sorted().iterator()
-
-        if (!iterator.hasNext())
-            return deviceMinSequence
-
-        var lastKey = iterator.next()
-        while (iterator.hasNext()) {
-            val key = iterator.next()
-            if (lastKey >= key - 1u) {
-                lastKey = key
-            } else {
-                break
-            }
-        }
-
-        if (lastKey < deviceMinSequence) {
-            return deviceMinSequence
-        }
-
-        return lastKey + 1u
-    }
-
-    fun startLogRequest(range: RecordRange): UploadProgress {
+    fun startLogRequest(range: RecordRange) : UploadProgress {
         // initialize tracking variables for pending record transfer
         nextExpectedRecord = range.minSeq
         nextExpectedDeviceStatus = range.maxSeq + 1u
-        totalExpected = missingRecordsForRange(range.minSeq, range.maxSeq)
-        totalRequested = range.maxSeq - range.minSeq + 1u
+        totalExpected = range.maxSeq - range.minSeq + 1u
         transferCount = 0u
         staleLogRequestCount = STALE_LOG_REQUEST_PACKET_COUNT
 
-        return UploadProgress(transferCount, totalExpected, totalRequested)
+        return UploadProgress(transferCount, logResponseDropCount, totalExpected)
     }
 
-    fun startLogBackfillRequest(
-        range: RecordRange,
-        currentDeviceStatusSequence: UInt
-    ): UploadProgress {
+    fun startLogBackfillRequest(range: RecordRange, currentDeviceStatusSequence: UInt) : UploadProgress {
         // initialize tracking variables for pending record transfer
         nextExpectedRecord = range.minSeq
         nextExpectedDeviceStatus = currentDeviceStatusSequence + 1u
-        totalExpected = missingRecordsForRange(range.minSeq, range.maxSeq)
-        totalRequested = range.maxSeq - range.minSeq + 1u
+        totalExpected = range.maxSeq - range.minSeq + 1u
         transferCount = 0u
         staleLogRequestCount = STALE_LOG_REQUEST_PACKET_COUNT
 
-        return UploadProgress(transferCount, totalExpected, totalRequested)
+        return UploadProgress(transferCount, logResponseDropCount, totalExpected)
     }
 
-    fun addFromLogResponse(logResponse: LogResponse): UploadProgress {
-        val loggedProbeDataPoint = when (logResponse) {
-            is ProbeLogResponse -> LoggedProbeDataPoint.fromLogResponse(
-                id,
-                logResponse,
-                startTime,
-                sessionInfo.samplePeriod,
-            )
+    fun addFromLogResponse(logResponse: LogResponse) : UploadProgress {
+        val loggedProbeDataPoint = LoggedProbeDataPoint.fromLogResponse(id, logResponse, startTime, sessionInfo.samplePeriod)
 
-            is NodeReadGaugeLogsResponse -> LoggedGaugeDataPoint.fromLogResponse(
-                id,
-                logResponse,
-                startTime,
-                sessionInfo.samplePeriod,
-            )
-
-            else -> NOT_IMPLEMENTED("logResponse $logResponse is not know or yet supported")
-        }
-
-        // new log response received, reset the stalled counter.
+        // response received, reset the stalled counter.
         staleLogRequestCount = STALE_LOG_REQUEST_PACKET_COUNT
 
-        // if the record isn't in the log, then add it -- we don't care about order because
-        // log records can come in out of order as they are broadcase through MeatNet
-        if (!_logs.containsKey(logResponse.sequenceNumber)) {
-            // store the log
-            _logs[loggedProbeDataPoint.sequenceNumber] = loggedProbeDataPoint
+        // check to see if we dropped data
+        if(logResponse.sequenceNumber > nextExpectedRecord) {
+            logResponseDropCount += (logResponse.sequenceNumber - nextExpectedRecord)
 
-            // update debug stats
+            // log a warning
+            Log.w(LOG_TAG, "Detected log response data drop ($serialNumber). " +
+                    "Drop range ${nextExpectedRecord}..${logResponse.sequenceNumber-1u}")
+
+            // track and log the dropped packet
+            for(sequence in nextExpectedRecord until logResponse.sequenceNumber) {
+                droppedRecords.add(sequence)
+                if(droppedRecords.size > MAX_DROPPED_PACKET_HANDLING) {
+                    break
+                }
+            }
+
+            // but still add this data and resync.  and remove any drops.
+            _logs[loggedProbeDataPoint.sequenceNumber] = loggedProbeDataPoint
             nextExpectedRecord = loggedProbeDataPoint.sequenceNumber + 1u
             transferCount++
+            droppedRecords.removeIf { dropped ->  dropped == loggedProbeDataPoint.sequenceNumber}
         }
+        // check to see if we received duplicate data
+        else if(logResponse.sequenceNumber < nextExpectedRecord) {
+            if(_logs.containsKey(logResponse.sequenceNumber)) {
+                Log.w(LOG_TAG,
+                    "Received duplicate record? " +
+                            "$serialNumber.${logResponse.sequenceNumber} ($nextExpectedRecord)")
 
-        if (PRINT_LOG_SEQUENCE_GAPS) {
-            // check to see if we dropped data
-            if (logResponse.sequenceNumber > nextExpectedRecord) {
-                Log.d(
-                    LOG_TAG, "Detected log response data drop ($serialNumber). " +
-                            "Drop range ${nextExpectedRecord}..${logResponse.sequenceNumber - 1u}"
-                )
-            } else if (logResponse.sequenceNumber < nextExpectedRecord) {
-                // the following can occur when re-requesting records to handle gaps in the record log.
-                Log.d(
-                    LOG_TAG,
-                    "Received duplicate record $serialNumber.${logResponse.sequenceNumber} ($nextExpectedRecord)"
-                )
+                _logs.remove(logResponse.sequenceNumber)
+                _logs[loggedProbeDataPoint.sequenceNumber] = loggedProbeDataPoint
+
+                // don't change the next expected
+            }
+            else {
+                // the following can occur when re-requesting records to handle gaps in the
+                // record log.
+                if(DebugSettings.DEBUG_LOG_TRANSFER) {
+                    Log.d(
+                        LOG_TAG,
+                        "Received duplicate record " +
+                                "$serialNumber.${logResponse.sequenceNumber} ($nextExpectedRecord)"
+                    )
+                }
             }
         }
+        // happy path, add the record, update the next expected.
+        else {
+            _logs[loggedProbeDataPoint.sequenceNumber] = loggedProbeDataPoint
+            nextExpectedRecord = loggedProbeDataPoint.sequenceNumber + 1u
+            transferCount++
+            droppedRecords.removeIf { dropped ->  dropped == loggedProbeDataPoint.sequenceNumber}
+        }
 
-        nextExpectedRecord = _logs.lastKey() + 1u
-
-        return UploadProgress(transferCount, totalExpected, totalRequested)
+        return UploadProgress(transferCount, logResponseDropCount, totalExpected)
     }
 
-    fun addFromDeviceStatus(deviceStatus: SpecializedDeviceStatus): SessionStatus {
-        val loggedDataPoint = when (deviceStatus) {
-            is ProbeStatus -> LoggedProbeDataPoint.fromDeviceStatus(
-                id,
-                deviceStatus,
-                startTime,
-                sessionInfo.samplePeriod
-            )
-
-            is GaugeStatus -> LoggedGaugeDataPoint.fromDeviceStatus(deviceStatus, startTime)
-            else -> NOT_IMPLEMENTED("$deviceStatus is yet know or supported")
-
-        }
+    fun addFromDeviceStatus(probeStatus: ProbeStatus) : SessionStatus {
+        val loggedProbeDataPoint = LoggedProbeDataPoint.fromDeviceStatus(id, probeStatus, startTime, sessionInfo.samplePeriod)
 
         // decrement the stale log request counter
         staleLogRequestCount--
 
         // sanity check -- if LogManger is adding ProbeStatus to the Session log, but has not
         // started the log request, then force nextExpectedDeviceStatus here.
-        if (nextExpectedDeviceStatus == UInt.MAX_VALUE) {
-            nextExpectedDeviceStatus = deviceStatus.maxSequenceNumber - 1u
-            if (DebugSettings.DEBUG_LOG_TRANSFER) {
-                Log.d(LOG_TAG, "Forcing nextExpectedDeviceStatue: $nextExpectedDeviceStatus")
-            }
+        if(nextExpectedDeviceStatus == UInt.MAX_VALUE)  {
+           nextExpectedDeviceStatus = probeStatus.maxSequenceNumber - 1u
+           if(DebugSettings.DEBUG_LOG_TRANSFER) {
+               Log.d(LOG_TAG, "Forcing nextExpectedDeviceStatue: $nextExpectedDeviceStatus")
+           }
         }
 
         // check to see if we dropped data
-        if (deviceStatus.maxSequenceNumber > nextExpectedDeviceStatus) {
+        if(probeStatus.maxSequenceNumber > nextExpectedDeviceStatus) {
+            deviceStatusDropCount += (probeStatus.maxSequenceNumber - nextExpectedDeviceStatus)
+
+            // track and log the dropped packet
+            for(sequence in nextExpectedDeviceStatus until probeStatus.maxSequenceNumber) {
+                droppedRecords.add(sequence)
+                if(droppedRecords.size > MAX_DROPPED_PACKET_HANDLING) {
+                    break
+                }
+            }
+
             // log a warning message
-            Log.w(
-                LOG_TAG, "Detected device status data drop ($serialNumber). " +
-                        "Drop range ${nextExpectedDeviceStatus}..${deviceStatus.maxSequenceNumber - 1u}"
-            )
+            Log.w(LOG_TAG, "Detected device status data drop ($serialNumber). " +
+                "Drop range ${nextExpectedDeviceStatus}..${probeStatus.maxSequenceNumber-1u}")
 
             // but still add this data and resync.
-            _logs[loggedDataPoint.sequenceNumber] = loggedDataPoint
-            nextExpectedDeviceStatus = loggedDataPoint.sequenceNumber + 1u
+            _logs[loggedProbeDataPoint.sequenceNumber] = loggedProbeDataPoint
+            nextExpectedDeviceStatus = loggedProbeDataPoint.sequenceNumber + 1u
         }
         // check to see if we received duplicate data
-        else if (deviceStatus.maxSequenceNumber < nextExpectedDeviceStatus) {
-            if (_logs.containsKey(deviceStatus.maxSequenceNumber)) {
-                Log.d(
-                    LOG_TAG,
+        else if(probeStatus.maxSequenceNumber < nextExpectedDeviceStatus) {
+            if(_logs.containsKey(probeStatus.maxSequenceNumber)) {
+                Log.d(LOG_TAG,
                     "Dropping duplicate device status: " +
-                            "$serialNumber.${deviceStatus.maxSequenceNumber} " +
-                            "($nextExpectedDeviceStatus)(${deviceStatus.maxSequenceNumber})"
-                )
-            } else {
-                Log.w(
-                    LOG_TAG,
+                            "$serialNumber.${probeStatus.maxSequenceNumber} " +
+                            "($nextExpectedDeviceStatus)(${probeStatus.maxSequenceNumber})")
+            }
+            else {
+                Log.w(LOG_TAG,
                     "Dropping old device status: " +
-                            "$serialNumber.${deviceStatus.maxSequenceNumber} " +
-                            "($nextExpectedDeviceStatus)(${deviceStatus.maxSequenceNumber})"
-                )
+                            "$serialNumber.${probeStatus.maxSequenceNumber} " +
+                            "($nextExpectedDeviceStatus)(${probeStatus.maxSequenceNumber})")
             }
         }
         // happy path, add the device status, update the next expected.
         else {
-            _logs[loggedDataPoint.sequenceNumber] = loggedDataPoint
-            nextExpectedDeviceStatus = loggedDataPoint.sequenceNumber + 1u
+            _logs[loggedProbeDataPoint.sequenceNumber] = loggedProbeDataPoint
+            nextExpectedDeviceStatus = loggedProbeDataPoint.sequenceNumber + 1u
         }
 
         val status = SessionStatus(
@@ -306,20 +263,22 @@ internal class Session(
             minSequenceNumber,
             maxSequenceNumber,
             _logs.size.toUInt(),
+            logResponseDropCount,
+            deviceStatusDropCount,
+            droppedRecords
         )
 
-        if (DebugSettings.DEBUG_LOG_SESSION_STATUS) {
-            Log.d(
-                LOG_TAG, "$status " +
-                        "[${deviceStatus.minSequenceNumber.toInt()} - ${deviceStatus.maxSequenceNumber.toInt()}]"
+        if(DebugSettings.DEBUG_LOG_SESSION_STATUS) {
+            Log.d(LOG_TAG, "$status " +
+                    "[${probeStatus.minSequenceNumber.toInt()} - ${probeStatus.maxSequenceNumber.toInt()}]"
             )
         }
 
         return status
     }
 
-    fun completeLogRequest(): SessionStatus {
-        if (DebugSettings.DEBUG_LOG_TRANSFER) {
+    fun completeLogRequest() : SessionStatus {
+        if(DebugSettings.DEBUG_LOG_TRANSFER) {
             Log.d(LOG_TAG, "Completing Log Request ...")
         }
         nextExpectedRecord = UInt.MAX_VALUE
@@ -329,20 +288,13 @@ internal class Session(
             minSequenceNumber,
             maxSequenceNumber,
             _logs.size.toUInt(),
+            logResponseDropCount,
+            deviceStatusDropCount,
+            droppedRecords
         )
     }
 
     fun expectFutureLogRequest() {
         nextExpectedDeviceStatus = UInt.MAX_VALUE
-    }
-
-    fun missingRecordsForRange(start: UInt, end: UInt): UInt {
-        var count = 0u
-        for (sequence in start..end) {
-            if (!_logs.containsKey(sequence)) {
-                count++
-            }
-        }
-        return count
     }
 }

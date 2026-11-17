@@ -32,12 +32,9 @@ import inc.combustion.framework.ble.putLittleEndianUInt32At
 
 internal class NodeReadModelInfoRequest (
     serialNumber: String,
-    requestId: UInt? = null
 ) : NodeRequest(
     populatePayload(serialNumber),
-    NodeMessageType.PROBE_MODEL_INFORMATION,
-    requestId,
-    serialNumber,
+    NodeMessageType.PROBE_MODEL_INFORMATION
 ) {
     companion object {
         const val PAYLOAD_LENGTH: UByte = 4u

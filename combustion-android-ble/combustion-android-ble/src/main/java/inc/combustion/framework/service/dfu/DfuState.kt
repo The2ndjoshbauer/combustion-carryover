@@ -30,36 +30,36 @@ package inc.combustion.framework.service.dfu
 
 import inc.combustion.framework.service.Device
 
-data class DfuState(
-    val device: Device,
-    val status: DfuStatus,
-    val stuckBootloader: Boolean = false,
-)
-
-sealed interface DfuStatus {
+sealed class DfuState {
+    abstract val device: Device
+    abstract fun copy(device: Device): DfuState
 
     /**
      * A device is [NotReady] if it's seen in advertising but hasn't pulled down the necessary
      * information from the device information service.
      */
-    data class NotReady(val status: Status) : DfuStatus {
+    data class NotReady(override val device: Device, val status: Status) : DfuState() {
         enum class Status {
             DISCONNECTED,
             OUT_OF_RANGE,
             CONNECTING,
             READING_DEVICE_INFORMATION,
-            BLOCKED,
         }
+        override fun copy(device: Device): DfuState = copy(device = device, status = status)
     }
 
     /**
      * A device is [Idle] if it's available to perform DFU, but the DFU operation isn't currently
      * in progress.
      */
-    data class Idle(val status: String = "") : DfuStatus
+    data class Idle(override val device: Device, val status: String = "") : DfuState() {
+        override fun copy(device: Device): DfuState = copy(device = device, status = status)
+    }
 
     /**
      * A device is [InProgress] if it's in the middle of a DFU operation.
      */
-    data class InProgress(val status: DfuProgress) : DfuStatus
+    data class InProgress(override val device: Device, val status: DfuProgress) : DfuState() {
+        override fun copy(device: Device): DfuState = copy(device = device, status = status)
+    }
 }

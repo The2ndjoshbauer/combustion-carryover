@@ -28,67 +28,52 @@
 package inc.combustion.framework.ble.device
 
 import android.bluetooth.BluetoothAdapter
-import android.util.Log
-import inc.combustion.framework.LOG_TAG
-import inc.combustion.framework.ble.scanning.DeviceAdvertisingData
+import androidx.lifecycle.LifecycleOwner
+import inc.combustion.framework.ble.scanning.CombustionAdvertisingData
 import inc.combustion.framework.service.FirmwareVersion
 import inc.combustion.framework.service.ModelInformation
-import inc.combustion.framework.service.dfu.DfuProductType
-import kotlinx.coroutines.CoroutineScope
 
 internal open class DeviceInformationBleDevice(
     mac: String,
-    advertisement: DeviceAdvertisingData,
-    scope: CoroutineScope,
-    adapter: BluetoothAdapter,
-) : BleDevice(mac, advertisement, scope, adapter) {
+    advertisement: CombustionAdvertisingData,
+    owner: LifecycleOwner,
+    adapter: BluetoothAdapter
+) : BleDevice(mac, advertisement, owner, adapter) {
 
     var serialNumber: String? = null
     var firmwareVersion: FirmwareVersion? = null
     var hardwareRevision: String? = null
     var modelInformation: ModelInformation? = null
 
-    val dfuProductType: DfuProductType
-        get() = modelInformation?.dfuProductType ?: DfuProductType.fromCombustionProductType(
-            productType
-        )
 
     override fun disconnect() {
-        if (isConnected.get()) {
-            serialNumber = null
-            firmwareVersion = null
-            hardwareRevision = null
-            super.disconnect()
-        }
+        serialNumber = null
+        firmwareVersion = null
+        hardwareRevision = null
+        super.disconnect()
     }
-
     suspend fun readSerialNumber() {
-        if (isConnected.get()) {
+        if(isConnected.get()) {
             serialNumber = readSerialNumberCharacteristic()?.uppercase()
         }
     }
 
     suspend fun readFirmwareVersion() {
-        if (isConnected.get()) {
-            firmwareVersion = try {
-                readFirmwareVersionCharacteristic()?.let { versionString ->
-                    FirmwareVersion.fromString(versionString = versionString)
-                }
-            } catch (e: IllegalArgumentException) {
-                Log.e(LOG_TAG, "Parsing firmware version failed, message = ${e.message}", e)
-                FirmwareVersion.INVALID
+        if(isConnected.get()) {
+            firmwareVersion = readFirmwareVersionCharacteristic()?.let {versionString ->
+                FirmwareVersion.fromString(versionString = versionString)
             }
         }
     }
 
     suspend fun readHardwareRevision() {
-        if (isConnected.get()) {
+        if(isConnected.get()) {
             hardwareRevision = readHardwareRevisionCharacteristic()
         }
     }
 
     suspend fun readModelInformation() {
-        if (isConnected.get()) {
+        if(isConnected.get()) {
             modelInformation = readModelNumberCharacteristic()?.let { infoString ->
                 ModelInformation.fromString(infoString)
             }

@@ -32,7 +32,7 @@ import inc.combustion.framework.ble.getLittleEndianUInt32At
 import inc.combustion.framework.service.ModelInformation
 
 internal class NodeReadModelInfoResponse (
-    override val serialNumber: String,
+    val serialNumber: String,
     val modelInfo: ModelInformation,
     success: Boolean,
     requestId: UInt,
@@ -42,14 +42,11 @@ internal class NodeReadModelInfoResponse (
     success,
     requestId,
     responseId,
-    payloadLength,
-    NodeMessageType.PROBE_MODEL_INFORMATION
-), TargetedNodeResponse {
-    override fun toString(): String {
-        return "${super.toString()} $serialNumber ${modelInfo.productType} ${modelInfo.sku} ${modelInfo.manufacturingLot}"
-    }
+    payloadLength
+) {
 
     companion object {
+
         // payload is 54 bytes = serial number (4 bytes) + model info (50 bytes)
         const val PAYLOAD_LENGTH: UByte = 54u
 
