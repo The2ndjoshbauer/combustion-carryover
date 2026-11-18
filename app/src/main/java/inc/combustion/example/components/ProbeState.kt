@@ -9,6 +9,16 @@ import inc.combustion.example.MeatType
 import inc.combustion.example.CarryoverPredictor
 import kotlin.math.roundToInt
 
+data class GlidePathSample(
+    val timestampMs: Long,
+    val temperaturesC: DoubleArray,
+    val coreIndex: Int,
+    val surfaceIndex: Int,
+    val coreTempC: Double,
+    val surfaceTempC: Double,
+    val effectiveAlpha: Double
+)
+
 data class ProbeState(
     val serialNumber: String,
     private val convertTemperatureUnits: (Double) -> Double,
@@ -81,16 +91,43 @@ data class ProbeState(
     val suggestedPullTemp: MutableState<String> = mutableStateOf("---")
     val selectedMeatType: MutableState<MeatType> = mutableStateOf(MeatType.BEEF)
     val isWrapped: MutableState<Boolean> = mutableStateOf(false)
+    val glidePathHistory: SnapshotStateList<GlidePathSample> = mutableStateListOf()
+    val historyVersion: MutableState<Int> = mutableStateOf(0)
 
     private val predictor = CarryoverPredictor()
     private var activeSetPointC: Double? = null
+    private var userTargetTemperatureC: Double? = null
     private var lastCoreIndex: Int = 0
     private var lastSurfaceIndex: Int = 3
     private var hasValidTemps: Boolean = false
     private var filterInitialized: Boolean = false
     private var previousFilteredTempsC: DoubleArray? = null
     private var lastUpdateTimestampMs: Long = 0L
+    private var lastHistorySampleTimestampMs: Long = 0L
     val isUploading = mutableStateOf(false)
+
+    fun applyUserTargetTemperatureC(targetC: Double) {
+        val clampedC = targetC.coerceIn(
+            DeviceManager.MINIMUM_PREDICTION_SETPOINT_CELSIUS,
+            DeviceManager.MAXIMUM_PREDICTION_SETPOINT_CELSIUS
+        )
+        userTargetTemperatureC = clampedC
+        activeSetPointC = clampedC
+        rawSetPointTemperatureC.value = clampedC
+        setPointTemperature.value = convertTemperature(clampedC).roundToInt().toString()
+        if (predictionMode.value.isEmpty() || predictionMode.value == ProbePredictionMode.NONE.toString()) {
+            predictionMode.value = ProbePredictionMode.TIME_TO_REMOVAL.toString()
+        }
+        recalculateCarryover()
+    }
+
+    fun clearUserTargetTemperature() {
+        userTargetTemperatureC = null
+        activeSetPointC = null
+        setPointTemperature.value = ""
+        predictionMode.value = ProbePredictionMode.NONE.toString()
+        recalculateCarryover()
+    }
 
     fun updateProbeState(state: Probe, downloads: Int) {
         macAddress.value = state.mac
@@ -159,6 +196,26 @@ data class ProbeState(
             T3.value = f(temperaturesCelsius[2]); T4.value = f(temperaturesCelsius[3])
             T5.value = f(temperaturesCelsius[4]); T6.value = f(temperaturesCelsius[5])
             T7.value = f(temperaturesCelsius[6]); T8.value = f(temperaturesCelsius[7])
+
+            val coreC = state.coreTemperatureCelsius ?: temperaturesCelsius[lastCoreIndex.coerceIn(0, 7)]
+            val surfaceC = state.surfaceTemperatureCelsius ?: temperaturesCelsius[lastSurfaceIndex.coerceIn(0, 7)]
+            if (coreC > 0.0 && (nowMs - lastHistorySampleTimestampMs >= 900L || glidePathHistory.isEmpty())) {
+                lastHistorySampleTimestampMs = nowMs
+                if (glidePathHistory.size >= 360) {
+                    glidePathHistory.removeAt(0)
+                }
+                glidePathHistory.add(
+                    GlidePathSample(
+                        timestampMs = nowMs,
+                        temperaturesC = DoubleArray(8) { temperaturesCelsius[it] },
+                        coreIndex = lastCoreIndex.coerceIn(0, 6),
+                        surfaceIndex = lastSurfaceIndex.coerceIn((lastCoreIndex + 1).coerceAtMost(7), 7),
+                        coreTempC = coreC,
+                        surfaceTempC = surfaceC,
+                        effectiveAlpha = effectiveDiffusivityState.value
+                    )
+                )
+            }
         }
 
         fun fmt(v: Double?) = v?.let { String.format("%.1f", convertTemperature(it)) } ?: "---"
@@ -171,6 +228,15 @@ data class ProbeState(
         coreTemperature.value = fmt(state.coreTemperatureCelsius)
         surfaceTemperature.value = fmt(state.surfaceTemperatureCelsius)
         ambientTemperature.value = fmt(state.ambientTemperatureCelsius)
+        heatStartTemperature.value = fmt(state.heatStartTemperatureCelsius)
+        estimateCore.value = fmt(state.estimatedCoreCelsius)
+        percentThroughCook.value = state.predictionPercent?.let { "${it.roundToInt()}%" } ?: "---"
+        prediction.value = state.predictionSeconds?.let { secs ->
+            val mins = secs.toLong() / 60
+            val remSecs = secs.toLong() % 60
+            String.format("%02d:%02d", mins, remSecs)
+        } ?: "---"
+
         uploadStatus.value = if(state.uploadState is ProbeUploadState.ProbeUploadInProgress) "Uploading..." else if (state.uploadState is ProbeUploadState.ProbeUploadComplete) "Complete" else "Connect"
         recordRange.value = if(state.connectionState == DeviceConnectionState.CONNECTED) "${state.minSequenceNumber} : ${state.maxSequenceNumber}" else ""
         connectionDescription.value = state.connectionState.toString()
@@ -179,20 +245,80 @@ data class ProbeState(
         virtualAmbientSensor.value = state.virtualSensors.virtualAmbientSensor.toString()
 
         predictionState.value = state.predictionState?.toString() ?: ""
-        predictionMode.value = state.predictionMode?.toString() ?: ""
-        predictionType.value = state.predictionType?.toString() ?: ""
-        rawSetPointTemperatureC.value = state.setPointTemperatureCelsius ?: DeviceManager.MINIMUM_PREDICTION_SETPOINT_CELSIUS
-        setPointTemperature.value = state.setPointTemperatureCelsius?.let { convertTemperature(it).roundToInt().toString() } ?: ""
+        val hwSetPointC = state.setPointTemperatureCelsius?.takeIf {
+            it >= DeviceManager.MINIMUM_PREDICTION_SETPOINT_CELSIUS &&
+                state.predictionMode != null &&
+                state.predictionMode != ProbePredictionMode.NONE
+        }
+        val effectiveSetPointC = userTargetTemperatureC ?: hwSetPointC
+        activeSetPointC = effectiveSetPointC
 
-        activeSetPointC = state.setPointTemperatureCelsius
-        hasValidTemps = (state.coreTemperatureCelsius != null && state.temperaturesCelsius != null)
+        if (effectiveSetPointC != null) {
+            rawSetPointTemperatureC.value = effectiveSetPointC
+            setPointTemperature.value = convertTemperature(effectiveSetPointC).roundToInt().toString()
+            predictionMode.value = if (state.predictionMode != null && state.predictionMode != ProbePredictionMode.NONE) {
+                state.predictionMode.toString()
+            } else {
+                ProbePredictionMode.TIME_TO_REMOVAL.toString()
+            }
+        } else {
+            rawSetPointTemperatureC.value = state.setPointTemperatureCelsius ?: DeviceManager.MINIMUM_PREDICTION_SETPOINT_CELSIUS
+            setPointTemperature.value = ""
+            predictionMode.value = state.predictionMode?.toString() ?: ""
+        }
+        predictionType.value = state.predictionType?.toString() ?: ""
+
+        hasValidTemps = (state.coreTemperatureCelsius != null || temperaturesCelsius.any { it > 0.0 })
 
         recalculateCarryover()
     }
 
+    fun getEffectiveTargetTempC(): Double {
+        return userTargetTemperatureC ?: activeSetPointC ?: if (setPointTemperature.value.isNotEmpty()) {
+            rawSetPointTemperatureC.value
+        } else {
+            when (selectedMeatType.value) {
+                MeatType.POULTRY -> 68.3
+                MeatType.FISH -> 57.0
+                else -> 57.2
+            }
+        }
+    }
+
+    fun computeSampleCarryover(
+        profileTempsC: DoubleArray,
+        coreIdx: Int,
+        surfIdx: Int,
+        coreTempC: Double,
+        targetTempC: Double,
+        alpha: Double? = null
+    ): Pair<Double, Double> {
+        val validCore = coreIdx.coerceIn(0, 6)
+        val validSurf = surfIdx.coerceIn(validCore + 1, 7)
+        val spanCount = validSurf - validCore + 1
+        val activeProfile = DoubleArray(spanCount) { idx ->
+            profileTempsC.getOrElse(validCore + idx) { coreTempC }
+        }
+        val radiusMeters = (validSurf - validCore) * 0.006
+        val effectiveAlpha = alpha ?: effectiveDiffusivityState.value
+
+        val peakCoreC = predictor.predictPeakCoreTemp(
+            profile = activeProfile,
+            radiusMeters = radiusMeters,
+            alpha = effectiveAlpha,
+            thermalConductivity = selectedMeatType.value.thermalConductivity,
+            isWrapped = isWrapped.value
+        )
+        val carryoverRiseC = (peakCoreC - coreTempC).coerceAtLeast(0.0)
+        val suggestedPullC = targetTempC - carryoverRiseC
+        return peakCoreC to suggestedPullC
+    }
+
+    fun toDisplayTemperature(temperatureC: Double): Double = convertTemperature(temperatureC)
+
     fun recalculateCarryover() {
-        val target = activeSetPointC
-        if (hasValidTemps && target != null && lastCoreIndex in 0..7 && lastSurfaceIndex in 0..7 && lastCoreIndex < lastSurfaceIndex) {
+        val target = getEffectiveTargetTempC()
+        if (hasValidTemps && lastCoreIndex in 0..7 && lastSurfaceIndex in 0..7 && lastCoreIndex < lastSurfaceIndex) {
             val pullAtC = predictor.predictPeakTemp(
                 targetTemp = target,
                 temperatures = temperaturesCelsius,
@@ -206,6 +332,7 @@ data class ProbeState(
         } else {
             suggestedPullTemp.value = "---"
         }
+        historyVersion.value = historyVersion.value + 1
     }
 
     private fun f(v: Double) = String.format("%.1f", convertTemperature(v))

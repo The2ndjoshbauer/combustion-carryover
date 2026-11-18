@@ -29,6 +29,7 @@
 package inc.combustion.example.components
 
 import android.graphics.Typeface
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.MaterialTheme
@@ -37,11 +38,11 @@ import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidViewBinding
 import com.github.mikephil.charting.charts.LineChart
 import com.github.mikephil.charting.components.Legend
+import com.github.mikephil.charting.components.XAxis
 import com.github.mikephil.charting.components.YAxis
 import com.github.mikephil.charting.data.Entry
 import com.github.mikephil.charting.data.LineData
@@ -49,50 +50,133 @@ import com.github.mikephil.charting.data.LineDataSet
 import inc.combustion.example.databinding.LineChartBinding
 import inc.combustion.framework.service.LoggedProbeDataPoint
 import java.util.*
+import kotlin.math.max
+
+private data class SensorPlotPoint(
+    val timestampMs: Long,
+    val temperaturesC: DoubleArray
+)
 
 @Composable
 fun MeasurementsLineChart(
+    probeState: ProbeState,
     plotData: SnapshotStateList<LoggedProbeDataPoint>,
     plotDataStartTimestamp: MutableState<Date>,
     noDataComposable: @Composable () -> Unit,
     primaryColor: Int = MaterialTheme.colors.primary.toArgb(),
     onPrimaryColor: Int = MaterialTheme.colors.onPrimary.toArgb(),
 ) {
-    val configuration = LocalConfiguration.current
-    var initialized by remember { mutableStateOf(false) }
-    val dataCount = derivedStateOf {  plotData.count() }
+    val historyVersion = probeState.historyVersion.value
+    val liveSamples = probeState.glidePathHistory.toList()
+    val loggedSnapshot = plotData.toList()
+    val currentTemps = probeState.temperaturesCelsius.toList()
+    val hasAnyValidTemp = currentTemps.any { it > 0.0 } || probeState.rawCoreTemperatureC.value > 0.0
 
-    if(dataCount.value <= 0) {
-        noDataComposable()
+    val mergedPoints = remember(loggedSnapshot.size, liveSamples.size, historyVersion, hasAnyValidTemp) {
+        val points = ArrayList<SensorPlotPoint>()
+        if (loggedSnapshot.isNotEmpty()) {
+            val step = max(1, loggedSnapshot.size / 250)
+            var idx = 0
+            while (idx < loggedSnapshot.size) {
+                val dp = loggedSnapshot[idx]
+                val vals = dp.temperatures.values
+                points.add(
+                    SensorPlotPoint(
+                        timestampMs = dp.timestamp.time,
+                        temperaturesC = DoubleArray(8) { i -> vals.getOrElse(i) { 0.0 } }
+                    )
+                )
+                idx += step
+            }
+            val lastDp = loggedSnapshot.last()
+            if (points.lastOrNull()?.timestampMs != lastDp.timestamp.time) {
+                val vals = lastDp.temperatures.values
+                points.add(
+                    SensorPlotPoint(
+                        timestampMs = lastDp.timestamp.time,
+                        temperaturesC = DoubleArray(8) { i -> vals.getOrElse(i) { 0.0 } }
+                    )
+                )
+            }
+            val lastLogTime = lastDp.timestamp.time
+            liveSamples.filter { it.timestampMs > lastLogTime }.forEach { sample ->
+                points.add(
+                    SensorPlotPoint(
+                        timestampMs = sample.timestampMs,
+                        temperaturesC = sample.temperaturesC
+                    )
+                )
+            }
+        } else if (liveSamples.isNotEmpty()) {
+            liveSamples.forEach { sample ->
+                points.add(
+                    SensorPlotPoint(
+                        timestampMs = sample.timestampMs,
+                        temperaturesC = sample.temperaturesC
+                    )
+                )
+            }
+        } else if (hasAnyValidTemp) {
+            points.add(
+                SensorPlotPoint(
+                    timestampMs = System.currentTimeMillis(),
+                    temperaturesC = DoubleArray(8) { i -> currentTemps.getOrElse(i) { 0.0 } }
+                )
+            )
+        }
+        points
     }
-    else {
+
+    if (mergedPoints.isEmpty()) {
+        noDataComposable()
+    } else {
         AndroidViewBinding(
-            factory = LineChartBinding::inflate,
+            factory = { inflater, parent, attachToParent ->
+                LineChartBinding.inflate(inflater, parent, attachToParent).apply {
+                    InitializeChart(lineChart, primaryColor, onPrimaryColor)
+                }
+            },
             modifier = Modifier
-                .height(height = (configuration.screenWidthDp).dp)
+                .fillMaxWidth()
+                .height(300.dp)
                 .padding(top = 8.dp),
             update = {
-                // initialize chart
-                if(!initialized) {
+                if (lineChart.data == null || lineChart.data.dataSetCount < 8) {
                     InitializeChart(lineChart, primaryColor, onPrimaryColor)
-                    initialized = true
                 }
 
-                // clearing data from chart
-                if(dataCount.value < lineChart.data.dataSets[0].entryCount.toFloat())
-                    InitializeChart(lineChart, primaryColor, onPrimaryColor)
+                for (index in 0..7) {
+                    (lineChart.data.getDataSetByIndex(index) as? LineDataSet)?.clear()
+                }
 
-                for (index in 0..7)
-                    lineChart.data.dataSets[index].clear()
+                val startTimeMs = if (loggedSnapshot.isNotEmpty()) {
+                    minOf(plotDataStartTimestamp.value.time, mergedPoints.first().timestampMs)
+                } else {
+                    mergedPoints.first().timestampMs
+                }
 
-                plotData.forEach { dataPoint ->
-                    var index = 0;
-                    val elapsedTimestampMinutes = (dataPoint.timestamp.time - plotDataStartTimestamp.value.time) / 60000.0f
-                    dataPoint.temperatures.values.forEach {
-                        val tempInF = ((it.toFloat() * 1.8) + 32.0).toFloat()
-                        val entry = Entry(elapsedTimestampMinutes, tempInF)
-                        lineChart.data.addEntry(entry, index)
-                        index++
+                var lastX = -1f
+                mergedPoints.forEach { pt ->
+                    val rawMinutes = (pt.timestampMs - startTimeMs) / 60000.0f
+                    val xVal = if (lastX >= 0f && rawMinutes <= lastX) {
+                        lastX + 0.02f
+                    } else {
+                        rawMinutes
+                    }
+                    lastX = xVal
+
+                    for (sensorIdx in 0..7) {
+                        val tempDisplay = probeState.toDisplayTemperature(pt.temperaturesC[sensorIdx]).toFloat()
+                        lineChart.data.addEntry(Entry(xVal, tempDisplay), sensorIdx)
+                    }
+                }
+
+                // If only a single point exists so far, add a second point at +0.1 min so all 8 sensor lines render visibly
+                if (mergedPoints.size == 1) {
+                    val pt = mergedPoints.first()
+                    for (sensorIdx in 0..7) {
+                        val tempDisplay = probeState.toDisplayTemperature(pt.temperaturesC[sensorIdx]).toFloat()
+                        lineChart.data.addEntry(Entry(0.1f, tempDisplay), sensorIdx)
                     }
                 }
 
@@ -110,49 +194,44 @@ fun InitializeChart(
     onPrimaryColor: Int
 ) {
     val lineColors = listOf(
-        Color.Blue.toArgb(),
-        Color.Cyan.toArgb(),
-        Color.Green.toArgb(),
-        Color.Yellow.toArgb(),
-        Color.Magenta.toArgb(),
-        Color.Red.toArgb(),
-        Color(0xFF, 0xA5, 0x00).toArgb(),
-        Color(0xFF, 0x00, 0x7F).toArgb()
+        Color(0xFF2979FF).toArgb(),
+        Color(0xFF00E5FF).toArgb(),
+        Color(0xFF00E676).toArgb(),
+        Color(0xFFFFEA00).toArgb(),
+        Color(0xFFE040FB).toArgb(),
+        Color(0xFFFF5252).toArgb(),
+        Color(0xFFFF9100).toArgb(),
+        Color(0xFFFF4081).toArgb()
     )
 
-    // enable description text
     chart.description.isEnabled = true
+    chart.description.text = "Elapsed Time (min)"
+    chart.description.textColor = onPrimaryColor
 
-    // enable touch gestures
     chart.setTouchEnabled(true)
-
-    // enable scaling and dragging
     chart.isDragEnabled = true
     chart.setScaleEnabled(true)
     chart.setDrawGridBackground(false)
     chart.setGridBackgroundColor(primaryColor)
-
-    // if disabled, scaling can be done on x- and y-axis separately
     chart.setPinchZoom(true)
-
     chart.setBackgroundColor(Color.Transparent.toArgb())
 
-    // add empty data
     val data = LineData()
     data.setValueTextColor(onPrimaryColor)
     data.isHighlightEnabled = false
     chart.data = data
 
-    // modify the legend ...
     chart.legend.form = Legend.LegendForm.LINE
     chart.legend.typeface = Typeface.SANS_SERIF
     chart.legend.textColor = onPrimaryColor
+    chart.legend.isWordWrapEnabled = true
 
-    // setup axis
+    chart.xAxis.position = XAxis.XAxisPosition.BOTTOM
     chart.xAxis.typeface = Typeface.SANS_SERIF
     chart.xAxis.textColor = onPrimaryColor
     chart.xAxis.setAvoidFirstLastClipping(true)
     chart.xAxis.isEnabled = true
+    chart.xAxis.granularity = 0.1f
 
     chart.axisLeft.typeface = Typeface.SANS_SERIF
     chart.axisLeft.textColor = onPrimaryColor
@@ -161,16 +240,18 @@ fun InitializeChart(
     chart.axisRight.isEnabled = false
 
     for (index in 0..7) {
-        var set = LineDataSet(null, "T${index+1}")
-        set.axisDependency = YAxis.AxisDependency.LEFT
-        set.color = lineColors[index]
-        set.lineWidth = 2.0f
-        set.fillAlpha = 65
-        set.fillColor = lineColors[index]
-        set.valueTextColor = onPrimaryColor
-        set.setDrawCircles(false)
-        set.setDrawHighlightIndicators(false)
-        set.setDrawVerticalHighlightIndicator(false)
+        val set = LineDataSet(null, "T${index + 1}").apply {
+            axisDependency = YAxis.AxisDependency.LEFT
+            color = lineColors[index]
+            lineWidth = 2.0f
+            fillAlpha = 65
+            fillColor = lineColors[index]
+            valueTextColor = onPrimaryColor
+            setDrawCircles(false)
+            setDrawValues(false)
+            setDrawHighlightIndicators(false)
+            setDrawVerticalHighlightIndicator(false)
+        }
         data.addDataSet(set)
     }
 }

@@ -355,11 +355,13 @@ class MainActivity : AppCompatActivity(), EasyPermissions.PermissionCallbacks {
                 myFile
             )
 
-            val intent = Intent(Intent.ACTION_SEND)
-            intent.flags = Intent.FLAG_GRANT_READ_URI_PERMISSION
-            intent.setDataAndType(contentUri, "text/plain")
-            intent.putExtra(Intent.EXTRA_STREAM, contentUri);
-            startActivity(intent)
+            val intent = Intent(Intent.ACTION_SEND).apply {
+                flags = Intent.FLAG_GRANT_READ_URI_PERMISSION
+                type = "text/csv"
+                putExtra(Intent.EXTRA_SUBJECT, fileName)
+                putExtra(Intent.EXTRA_STREAM, contentUri)
+            }
+            startActivity(Intent.createChooser(intent, "Export Probe CSV"))
         } catch (e: Exception) {
             Log.d(LOG_TAG, "Writing csv failed: $e")
             val toast = Toast.makeText(this.applicationContext, "Unable to Share Data", Toast.LENGTH_LONG)

@@ -1,123 +1,75 @@
 plugins {
     id("com.android.library")
-    id("kotlin-android")
-    id("maven-publish")
-}
-
-def getVersionName = { ->
-    try {
-        def stdout = new ByteArrayOutputStream()
-        exec {
-            commandLine 'git', 'describe', '--tags', '--abbrev=4', 'HEAD'
-            standardOutput = stdout
-        }
-        return stdout.toString().trim()
-    }
-    catch (ignored) {
-        return null;
-    }
 }
 
 android {
-    compileSdk 33
+    namespace = "inc.combustion.framework"
+    compileSdk = 36
 
     defaultConfig {
-        minSdk 24
-        targetSdk 33
-        versionCode 1
-        versionName "0.0.3"
+        minSdk = 24
+        targetSdk = 36
 
-        var versionName = getVersionName()
-        buildConfigField 'String', 'VERSION_NAME', "\"" + versionName + "\""
+        buildConfigField "String", "VERSION_NAME", "\"0.0.3\""
 
-        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
-            useSupportLibrary true
+            useSupportLibrary = true
         }
     }
+
     buildTypes {
         release {
-            minifyEnabled false
-            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
-            signingConfig signingConfigs.debug
+            minifyEnabled = false
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
     }
+
     compileOptions {
-        coreLibraryDesugaringEnabled true
-        sourceCompatibility JavaVersion.VERSION_1_8
-        targetCompatibility JavaVersion.VERSION_1_8
+        coreLibraryDesugaringEnabled = true
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
     }
-    kotlinOptions {
-        jvmTarget = '1.8'
+
+    buildFeatures {
+        buildConfig = true
     }
-    packagingOptions {
+
+    packaging {
         resources {
-            excludes += '/META-INF/{AL2.0,LGPL2.1}'
+            excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
     }
 
-    // see: https://developer.android.com/studio/write/lint
     lint {
-        // If set to true, turns off analysis progress reporting by lint.
-        quiet true
-        // If set to true (default), stops the build if errors are found.
-        abortOnError true
-        // If true, only report errors.
-        ignoreWarnings false
-        // If true, lint also checks all dependencies as part of its analysis. Recommended for
-        // projects consisting of an app with library dependencies.
-        checkDependencies true
+        quiet = true
+        abortOnError = true
+        ignoreWarnings = false
+        checkDependencies = true
     }
+}
 
-    tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile).all {
-        kotlinOptions {
-            freeCompilerArgs += [
-                    '-Xopt-in=kotlin.ExperimentalUnsignedTypes',
-                    '-Xopt-in=com.juul.kable.ObsoleteKableApi',
-                    '-Xjvm-default=compatibility'
-            ]
-        }
+tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile).configureEach {
+    compilerOptions {
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+        freeCompilerArgs.addAll([
+                "-opt-in=kotlin.ExperimentalUnsignedTypes",
+                "-opt-in=com.juul.kable.ObsoleteKableApi"
+        ])
     }
 }
 
 dependencies {
-    implementation("androidx.core:core-ktx:1.9.0")
+    implementation("androidx.core:core-ktx:1.12.0")
     implementation("androidx.appcompat:appcompat:1.6.1")
-    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.5.1")
+    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.6.2")
     implementation("com.juul.kable:core:0.21.0")
-    implementation("androidx.lifecycle:lifecycle-service:2.5.1")
-    implementation("org.jetbrains.kotlin:kotlin-reflect:1.7.21")
+    implementation("androidx.lifecycle:lifecycle-service:2.6.2")
+    implementation("org.jetbrains.kotlin:kotlin-reflect:$kotlin_version")
     implementation("no.nordicsemi.android:dfu:2.3.0")
-    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.0.2")
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.0.4")
     androidTestImplementation("androidx.test.ext:junit:1.1.5")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.5.1")
     testImplementation('junit:junit:4.13.2')
-    testImplementation("org.jetbrains.kotlin:kotlin-test-junit:1.7.10")
-}
-
-afterEvaluate {
-    publishing {
-        publications {
-            // Creates a Maven publication called "release".
-            release(MavenPublication) {
-                // Applies the component for the release build variant.
-                from components.release
-
-                // You can then customize attributes of the publication as shown below.
-                groupId = "inc.combustion"
-                artifactId = "framework"
-                version = "0.1.0"
-            }
-            // Creates a Maven publication called "debug".
-            debug(MavenPublication) {
-                // Applies the component for the debug build variant.
-                from components.debug
-
-                // You can then customize attributes of the publication as shown below.
-                groupId = "inc.combustion"
-                artifactId = "framework"
-                version = "0.1.0"
-            }
-        }
-    }
+    testImplementation("org.jetbrains.kotlin:kotlin-test-junit:$kotlin_version")
 }

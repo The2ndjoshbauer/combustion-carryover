@@ -48,6 +48,7 @@ import inc.combustion.example.R
 import inc.combustion.framework.service.LoggedProbeDataPoint
 import inc.combustion.framework.service.ProbePredictionMode
 import java.util.*
+import kotlin.math.roundToInt
 
 @Composable
 fun AppProgressIndicator(
@@ -161,7 +162,6 @@ fun ExpandableAppCard(
     ) {
         Column(
             modifier = Modifier
-                .clickable(onClick = { cardIsExpanded.value = !cardIsExpanded.value })
                 .padding(
                     horizontal = dimensionResource(id = R.dimen.large_padding),
                     vertical = dimensionResource(id = R.dimen.large_padding)
@@ -174,7 +174,12 @@ fun ExpandableAppCard(
                     ImageVector.vectorResource(id = R.drawable.ic_keyboard_arrow_down_24)
                 }
 
-                Row {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable(onClick = { cardIsExpanded.value = !cardIsExpanded.value })
+                        .padding(vertical = 4.dp)
+                ) {
                     Text(
                         modifier = Modifier
                             .weight(2.0f)
@@ -313,7 +318,7 @@ fun PredictionsCard(
 @Composable
 fun PlotCard(
     title: String = "Plot",
-    noDataDefaultReason: String = "Please Connect ...",
+    noDataDefaultReason: String = "Waiting for Probe Telemetry ...",
     noDataUploadingReason: String = "Getting Measurements ...",
     probeState: ProbeState,
     plotData: SnapshotStateList<LoggedProbeDataPoint>,
@@ -323,7 +328,8 @@ fun PlotCard(
     val data = remember { plotData }
     ExpandableAppCard(title = title, cardIsExpanded = cardIsExpanded){
         MeasurementsLineChart(
-            plotData = data, 
+            probeState = probeState,
+            plotData = data,
             plotDataStartTimestamp = plotDataStartTimestamp,
             noDataComposable = {
                 PlotCardNoData(
@@ -488,8 +494,8 @@ fun PredictionDetails(
 ) {
     val emptyHandler: () -> Unit = { }
     val color = DataColor(probeState = probeState)
-    val isConnected = probeState.connectionState.value == ProbeState.ConnectionState.CONNECTED
-    val isPredictionEnabled = probeState.predictionMode.value != ProbePredictionMode.NONE.toString()
+    val isPredictionEnabled = probeState.predictionMode.value.isNotEmpty() &&
+        probeState.predictionMode.value != ProbePredictionMode.NONE.toString()
     val isCooking = probeState.predictionState.value == "Cooking"
     val isPredicting = probeState.predictionState.value == "Predicting"
     val actionString = if(isPredictionEnabled) "Change Target Temperature" else "Enter Target Temperature"
@@ -524,7 +530,13 @@ fun PredictionDetails(
     Row(
         modifier = Modifier.fillMaxWidth()
     ){
-        val text = if(probeState.predictionIsStale.value) "---" else probeState.predictionState.value
+        val text = if (probeState.predictionState.value.isNotEmpty() && !probeState.predictionIsStale.value) {
+            probeState.predictionState.value
+        } else if (isPredictionEnabled) {
+            "Target Active"
+        } else {
+            "---"
+        }
         Text(
             modifier = Modifier
                 .weight(1.0f),
@@ -534,28 +546,38 @@ fun PredictionDetails(
             text = text,
         )
     }
-    if(isPredictionEnabled) {
+    val displayTarget = if (probeState.setPointTemperature.value.isNotEmpty()) {
+        "${probeState.setPointTemperature.value}°"
+    } else {
+        "${probeState.toDisplayTemperature(probeState.getEffectiveTargetTempC()).roundToInt()}°"
+    }
+    CardDataItem(
+        label = "Target Temperature",
+        value = displayTarget,
+        color = color
+    )
+    if (probeState.suggestedPullTemp.value != "---") {
         CardDataItem(
-            label = "Target Temperature",
-            value = if(probeState.predictionIsStale.value) "---" else probeState.setPointTemperature.value,
+            label = "Glide Path Pull Temp",
+            value = "${probeState.suggestedPullTemp.value}°",
             color = color
         )
-        if(isPredicting) {
-            CardDataItem(
-                label = "Progress",
-                value = if(probeState.predictionIsStale.value) "---" else probeState.percentThroughCook.value,
-                color = color
-            )
-        }
+    }
+    if(isPredictionEnabled && isPredicting) {
+        CardDataItem(
+            label = "Progress",
+            value = if(probeState.predictionIsStale.value) "---" else probeState.percentThroughCook.value,
+            color = color
+        )
     }
     CardWideButton(
         label = actionString,
-        enabled = isConnected,
+        enabled = true,
         onClick = onSetPredictionClick
     )
     CardWideButton(
         label = "Stop Prediction",
-        enabled = isPredictionEnabled && isConnected,
+        enabled = isPredictionEnabled,
         onClick = cancelPredictionHandler
     )
 }

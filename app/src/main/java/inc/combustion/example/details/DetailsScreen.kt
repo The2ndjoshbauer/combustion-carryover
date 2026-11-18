@@ -169,7 +169,7 @@ fun DetailsContent(appState: AppState, screenState: DetailsScreenState) {
         title = screenState.serialNumber,
         navigationIcon = { BackIconButton(onClick = { appState.navigateBack() }) },
         actionIcons = {
-            ShareIconButton(enable = screenState.probeData.size > 0, onClick = { screenState.onShareClick() })
+            ShareIconButton(enable = true, onClick = { screenState.onShareClick() })
             ConnectionStateButton(probeState = screenState.probeState, onClick = screenState.onConnectClick)
         },
         appState = appState
@@ -184,6 +184,10 @@ fun DetailsContent(appState: AppState, screenState: DetailsScreenState) {
                 item {
                     CookingDashboard(
                         probeState = screenState.probeState,
+                        plotData = screenState.probeData,
+                        recordCount = screenState.probeData.size,
+                        onSetTargetTempClick = { showEnterSetpointDialog = true },
+                        onExportCsvClick = { screenState.onShareClick() },
                         onMeatSelected = { type -> screenState.probeState.selectedMeatType.value = type }
                     )
                 }

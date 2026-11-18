@@ -50,19 +50,14 @@ class DetailsViewModel (
 ) : ViewModel() {
 
     private var collectJob: Job? = null
+    private var pendingTargetTemperatureC: Double? = null
 
     val probeState = ProbeState(serialNumber, temperatureUnitsConversion)
     val probeData = mutableStateListOf<LoggedProbeDataPoint>()
     val probeDataStartTimestamp = mutableStateOf(Date())
 
     val predictionTargetTemperatureC: Double
-        get() {
-            if(probeState.predictionMode.value == ProbePredictionMode.NONE.toString()) {
-                return 54.5
-            }
-
-            return probeState.rawSetPointTemperatureC.value
-        }
+        get() = probeState.getEffectiveTargetTempC()
 
     companion object {
         const val MINIMUM_PREDICTION_SETPOINT_CELSIUS = DeviceManager.MINIMUM_PREDICTION_SETPOINT_CELSIUS
@@ -77,8 +72,20 @@ class DetailsViewModel (
 
                 updateProbeState(it)
 
-                if(it.uploadState is ProbeUploadState.ProbeUploadComplete) {
-                    if(collectJob == null) {
+                // If user set a target while probe was advertising/connecting, send it once connected
+                if (it.connectionState == DeviceConnectionState.CONNECTED) {
+                    pendingTargetTemperatureC?.let { pendingC ->
+                        pendingTargetTemperatureC = null
+                        deviceManager.setRemovalPrediction(serialNumber, pendingC) { success ->
+                            if (!success) {
+                                Log.e(LOG_TAG, "Failed to send queued removal prediction $pendingC ($serialNumber)")
+                            }
+                        }
+                    }
+                }
+
+                if (it.uploadState is ProbeUploadState.ProbeUploadComplete) {
+                    if (collectJob == null) {
                         probeData.clear()
                         probeDataStartTimestamp.value = deviceManager.logStartTimestampForDevice(serialNumber)
 
@@ -89,17 +96,17 @@ class DetailsViewModel (
                             }
                         }
                     }
-                }
-                else if(it.uploadState !is ProbeUploadState.ProbeUploadInProgress) {
-                    collectJob?.cancel()
-                    collectJob = null
+                } else {
+                    if (it.uploadState !is ProbeUploadState.ProbeUploadInProgress) {
+                        collectJob?.cancel()
+                        collectJob = null
+                    }
 
-                    if (recordCount > probeData.count()){
-                        probeData.clear()
-                        probeDataStartTimestamp.value = deviceManager.logStartTimestampForDevice(serialNumber)
-
+                    if (recordCount > probeData.count()) {
                         val logs = deviceManager.exportLogsForDevice(serialNumber)
-                        logs?.let {
+                        if (!logs.isNullOrEmpty()) {
+                            probeDataStartTimestamp.value = deviceManager.logStartTimestampForDevice(serialNumber)
+                            probeData.clear()
                             probeData.addAll(logs)
                         }
                     }
@@ -178,15 +185,200 @@ class DetailsViewModel (
     }
 
     /**
-     * Gets the probe data as a shareable CSV file
+     * Gets the probe data as a shareable CSV file enriched with Glide Path & Crank-Nicolson metrics.
      *
      * @return first: suggested file name, second: csv data.
      */
     fun getShareData(): Pair<String, String> {
         val appVersionName = "${BuildConfig.APPLICATION_ID} ${BuildConfig.VERSION_NAME} ${BuildConfig.BUILD_TYPE}"
-        val (fileName, csvData) = deviceManager.exportLogsForDeviceAsCsv(probeState.serialNumber, appVersionName)
+        val probe = deviceManager.probe(probeState.serialNumber)
+        val logs = deviceManager.exportLogsForDevice(probeState.serialNumber)?.takeIf { it.isNotEmpty() }
+            ?: probeData.toList()
 
-        return fileName to csvData
+        val csvVersion = 4
+        val sb = StringBuilder()
+        val serial = probe?.serialNumber ?: probeState.serialNumber
+        val firmwareVersion = probe?.fwVersion?.toString() ?: probeState.firmwareVersion.value ?: "UNKNOWN"
+        val hardwareVersion = probe?.hwRevision ?: probeState.hardwareRevision.value ?: "UNKNOWN"
+        val samplePeriod = probe?.sessionInfo?.samplePeriod ?: 0u
+        val frameworkVersion = "Android ${inc.combustion.framework.Combustion.FRAMEWORK_VERSION_NAME} ${inc.combustion.framework.Combustion.FRAMEWORK_BUILD_TYPE}"
+
+        val now = java.time.LocalDateTime.now()
+        val headerDateTimeFormatter = java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
+        val createdDateTime = now.format(headerDateTimeFormatter)
+
+        val meatType = probeState.selectedMeatType.value
+        val isWrapped = probeState.isWrapped.value
+        val currentAlpha = probeState.effectiveDiffusivityState.value
+        val effectiveTargetC = if (probeState.setPointTemperature.value.isNotEmpty()) {
+            probeState.rawSetPointTemperatureC.value
+        } else {
+            when (meatType) {
+                inc.combustion.example.MeatType.POULTRY -> 68.3
+                else -> 96.0
+            }
+        }
+
+        // Header metadata (standard + Glide Path physics parameters)
+        sb.appendLine("Combustion Inc. Probe Data")
+        sb.appendLine("App: $appVersionName")
+        sb.appendLine("CSV version: $csvVersion")
+        sb.appendLine("Probe S/N: $serial")
+        sb.appendLine("Probe FW version: $firmwareVersion")
+        sb.appendLine("Probe HW revision: $hardwareVersion")
+        sb.appendLine("Framework: $frameworkVersion")
+        sb.appendLine("Sample Period: $samplePeriod")
+        sb.appendLine("Created: $createdDateTime")
+        sb.appendLine("Glide Path Meat Type: ${meatType.name} (${meatType.displayName})")
+        sb.appendLine("Wrapped / Insulated: $isWrapped")
+        sb.appendLine(String.format(Locale.US, "Calibrated Effective Diffusivity (m2/s): %.4e", currentAlpha))
+        sb.appendLine("Current Suggested Pull Temp: ${probeState.suggestedPullTemp.value}")
+        sb.appendLine()
+
+        // Column headers (Standard 23 + 6 Glide Path physics columns)
+        sb.appendLine(
+            "Timestamp,SessionID,SequenceNumber,T1,T2,T3,T4,T5,T6,T7,T8," +
+                "VirtualCoreTemperature,VirtualSurfaceTemperature,VirtualAmbientTemperature," +
+                "EstimatedCoreTemperature,PredictionSetPoint,VirtualCoreSensor,VirtualSurfaceSensor," +
+                "VirtualAmbientSensor,PredictionState,PredictionMode,PredictionType,PredictionValueSeconds," +
+                "MeatType,IsWrapped,EffectiveDiffusivity_m2s,PredictedRestingPeakCoreC,PredictedCarryoverRiseC,SuggestedPullTempC"
+        )
+
+        val predictor = inc.combustion.example.CarryoverPredictor()
+        val sensorSpacingMeters = 0.006
+
+        if (logs.isNotEmpty()) {
+            val startTime = logs.first().timestamp.time
+            var runningAlpha = meatType.diffusivity
+            var prevTemps: DoubleArray? = null
+            var prevTimestampMs = startTime
+
+            logs.forEach { dataPoint ->
+                val timestamp = dataPoint.timestamp.time
+                val elapsed = (timestamp - startTime) / 1000.0f
+                val dtSec = ((timestamp - prevTimestampMs) / 1000.0).coerceAtLeast(1.0)
+                val rawVals = dataPoint.temperatures.values
+
+                val coreIdx = dataPoint.virtualCoreSensor.ordinal.coerceIn(0, 6)
+                val surfIdx = (dataPoint.virtualSurfaceSensor.ordinal + 3).coerceIn(coreIdx + 1, 7)
+
+                val estimatedAlpha = predictor.estimateEffectiveDiffusivity(
+                    currentTemps = rawVals,
+                    prevTemps = prevTemps,
+                    dtSeconds = dtSec,
+                    coreIndex = coreIdx,
+                    surfaceIndex = surfIdx,
+                    baseDiffusivity = meatType.diffusivity
+                )
+                runningAlpha = 0.25 * estimatedAlpha + 0.75 * runningAlpha
+                prevTemps = DoubleArray(8) { idx -> rawVals.getOrElse(idx) { 0.0 } }
+                prevTimestampMs = timestamp
+
+                val spanCount = surfIdx - coreIdx + 1
+                val activeProfile = DoubleArray(spanCount) { idx -> rawVals.getOrElse(coreIdx + idx) { 0.0 } }
+                val radiusMeters = (surfIdx - coreIdx) * sensorSpacingMeters
+
+                val peakCoreC = predictor.predictPeakCoreTemp(
+                    profile = activeProfile,
+                    radiusMeters = radiusMeters,
+                    alpha = runningAlpha,
+                    thermalConductivity = meatType.thermalConductivity,
+                    isWrapped = isWrapped
+                )
+                val coreTempC = dataPoint.virtualCoreTemperature
+                val carryoverRiseC = (peakCoreC - coreTempC).coerceAtLeast(0.0)
+                val rowTargetC = if (dataPoint.predictionSetPointTemperature > 0.0) {
+                    dataPoint.predictionSetPointTemperature
+                } else {
+                    effectiveTargetC
+                }
+                val suggestedPullC = rowTargetC - carryoverRiseC
+
+                sb.appendLine(
+                    String.format(
+                        Locale.US,
+                        "%.3f,%s,%s,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%s,%s,%s,%s,%s,%s,%d,%s,%b,%.4e,%.2f,%.2f,%.2f",
+                        elapsed,
+                        dataPoint.sessionId.toString(),
+                        dataPoint.sequenceNumber.toString(),
+                        rawVals[0], rawVals[1], rawVals[2], rawVals[3],
+                        rawVals[4], rawVals[5], rawVals[6], rawVals[7],
+                        dataPoint.virtualCoreTemperature,
+                        dataPoint.virtualSurfaceTemperature,
+                        dataPoint.virtualAmbientTemperature,
+                        dataPoint.estimatedCoreTemperature,
+                        dataPoint.predictionSetPointTemperature,
+                        dataPoint.virtualCoreSensor.toString(),
+                        dataPoint.virtualSurfaceSensor.toString(),
+                        dataPoint.virtualAmbientSensor.toString(),
+                        dataPoint.predictionState.toString(),
+                        dataPoint.predictionMode.toString(),
+                        dataPoint.predictionType.toString(),
+                        dataPoint.predictionValueSeconds.toInt(),
+                        meatType.name,
+                        isWrapped,
+                        runningAlpha,
+                        peakCoreC,
+                        carryoverRiseC,
+                        suggestedPullC
+                    )
+                )
+            }
+        } else {
+            // Live snapshot fallback when historical logs have not finished downloading
+            val temps = probeState.temperaturesCelsius.toList()
+            val coreIdx = probeState.coreIndexState.value.coerceIn(0, 6)
+            val surfIdx = probeState.surfaceIndexState.value.coerceIn(coreIdx + 1, 7)
+            val spanCount = surfIdx - coreIdx + 1
+            val activeProfile = DoubleArray(spanCount) { idx -> temps.getOrElse(coreIdx + idx) { 0.0 } }
+            val radiusMeters = (surfIdx - coreIdx) * sensorSpacingMeters
+
+            val peakCoreC = predictor.predictPeakCoreTemp(
+                profile = activeProfile,
+                radiusMeters = radiusMeters,
+                alpha = currentAlpha,
+                thermalConductivity = meatType.thermalConductivity,
+                isWrapped = isWrapped
+            )
+            val coreTempC = probeState.rawCoreTemperatureC.value
+            val carryoverRiseC = (peakCoreC - coreTempC).coerceAtLeast(0.0)
+            val suggestedPullC = effectiveTargetC - carryoverRiseC
+
+            sb.appendLine(
+                String.format(
+                    Locale.US,
+                    "%.3f,%s,%s,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%s,%s,%s,%s,%s,%s,%d,%s,%b,%.4e,%.2f,%.2f,%.2f",
+                    0.0f,
+                    probe?.sessionInfo?.sessionID?.toString() ?: "LIVE",
+                    probe?.maxSequenceNumber?.toString() ?: "0",
+                    temps.getOrElse(0) { 0.0 }, temps.getOrElse(1) { 0.0 }, temps.getOrElse(2) { 0.0 }, temps.getOrElse(3) { 0.0 },
+                    temps.getOrElse(4) { 0.0 }, temps.getOrElse(5) { 0.0 }, temps.getOrElse(6) { 0.0 }, temps.getOrElse(7) { 0.0 },
+                    coreTempC,
+                    probeState.rawSurfaceTemperatureC.value,
+                    probeState.rawAmbientTemperatureC.value,
+                    probe?.estimatedCoreCelsius ?: coreTempC,
+                    effectiveTargetC,
+                    probeState.virtualCoreSensor.value.ifEmpty { "T1" },
+                    probeState.virtualSurfaceSensor.value.ifEmpty { "T4" },
+                    probeState.virtualAmbientSensor.value.ifEmpty { "T8" },
+                    probeState.predictionState.value.ifEmpty { "NONE" },
+                    probeState.predictionMode.value.ifEmpty { "NONE" },
+                    probeState.predictionType.value.ifEmpty { "NONE" },
+                    probe?.predictionSeconds?.toInt() ?: 0,
+                    meatType.name,
+                    isWrapped,
+                    currentAlpha,
+                    peakCoreC,
+                    carryoverRiseC,
+                    suggestedPullC
+                )
+            )
+        }
+
+        val fileDateTimeFormatter = java.time.format.DateTimeFormatter.ofPattern("yyyyMMddHHmmss")
+        val recommendedFileName = "ProbeData_${serial}_${now.format(fileDateTimeFormatter)}.csv"
+
+        return recommendedFileName to sb.toString()
     }
 
     /**
@@ -195,9 +387,27 @@ class DetailsViewModel (
      * @param removalTemperatureC The target removal temperature in Celsius.
      */
     fun setRemovalPrediction(removalTemperatureC: Double) {
-        deviceManager.setRemovalPrediction(serialNumber, removalTemperatureC) {
-            if(!it) {
-                Log.e(LOG_TAG, "Failed to set removal prediction to $removalTemperatureC ($serialNumber)")
+        probeState.applyUserTargetTemperatureC(removalTemperatureC)
+
+        when (probeState.connectionState.value) {
+            ProbeState.ConnectionState.CONNECTED -> {
+                deviceManager.setRemovalPrediction(serialNumber, removalTemperatureC) {
+                    if (!it) {
+                        Log.e(LOG_TAG, "Failed to set removal prediction to $removalTemperatureC ($serialNumber)")
+                    }
+                }
+            }
+            ProbeState.ConnectionState.ADVERTISING_CONNECTABLE -> {
+                pendingTargetTemperatureC = removalTemperatureC
+                deviceManager.connect(serialNumber)
+            }
+            else -> {
+                pendingTargetTemperatureC = removalTemperatureC
+                deviceManager.setRemovalPrediction(serialNumber, removalTemperatureC) {
+                    if (!it) {
+                        Log.d(LOG_TAG, "Target $removalTemperatureC saved locally; awaiting probe connection ($serialNumber)")
+                    }
+                }
             }
         }
     }
@@ -206,8 +416,10 @@ class DetailsViewModel (
      * Cancels the prediction if one is active.
      */
     fun cancelPrediction() {
+        pendingTargetTemperatureC = null
+        probeState.clearUserTargetTemperature()
         deviceManager.cancelPrediction(serialNumber) {
-            if(!it) {
+            if (!it) {
                 Log.e(LOG_TAG, "Failed to cancel prediction ($serialNumber)")
             }
         }

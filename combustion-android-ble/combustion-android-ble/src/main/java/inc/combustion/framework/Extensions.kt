@@ -32,3 +32,8 @@ val Any.LOG_TAG: String
         val tag = "Combustion.${javaClass.simpleName}"
         return if (tag.length <= 23) tag else tag.substring(0, 23)
     }
+
+object Combustion {
+    const val FRAMEWORK_VERSION_NAME: String = BuildConfig.VERSION_NAME
+    const val FRAMEWORK_BUILD_TYPE: String = BuildConfig.BUILD_TYPE
+}

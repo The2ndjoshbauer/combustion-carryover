@@ -51,35 +51,79 @@ fun TemperatureSelectionDialog(
     minValue: Int,
     maxValue: Int
 ) {
-    var selectedNumber by remember { mutableStateOf(initialValue) }
+    val safeMin = minOf(minValue, maxValue)
+    val safeMax = maxOf(minValue, maxValue)
+    var selectedNumber by remember(initialValue, safeMin, safeMax) {
+        mutableStateOf(initialValue.coerceIn(safeMin, safeMax))
+    }
 
     StandardDialog(
-        title = title ,
+        title = title,
         buttonText = buttonText,
         onButtonClick = {
             onButtonClick(selectedNumber)
         },
         onDismissRequest = onDismissRequest
     ) {
-        Row(
-            horizontalArrangement = Arrangement.Center
-        ){
-            Spacer(modifier = Modifier.weight(1.0f))
-            NumberPicker(
-                initialValue = initialValue,
-                minValue = minValue,
-                maxValue = maxValue,
-                onValueChange = {
-                    selectedNumber = it
-                }
-            )
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 8.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
             Text(
-                modifier = Modifier.align(Alignment.CenterVertically),
+                text = "$selectedNumber° $unitsString",
                 color = MaterialTheme.colors.onPrimary,
-                style = MaterialTheme.typography.h6,
-                text = unitsString
+                style = MaterialTheme.typography.h5,
+                textAlign = TextAlign.Center
             )
-            Spacer(modifier = Modifier.weight(1.0f))
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Row(
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Spacer(modifier = Modifier.weight(1.0f))
+                NumberPicker(
+                    initialValue = selectedNumber,
+                    minValue = safeMin,
+                    maxValue = safeMax,
+                    onValueChange = {
+                        selectedNumber = it.coerceIn(safeMin, safeMax)
+                    }
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    modifier = Modifier.align(Alignment.CenterVertically),
+                    color = MaterialTheme.colors.onPrimary,
+                    style = MaterialTheme.typography.h6,
+                    text = unitsString
+                )
+                Spacer(modifier = Modifier.weight(1.0f))
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceEvenly
+            ) {
+                listOf(-5, -1, 1, 5).forEach { delta ->
+                    OutlinedButton(
+                        onClick = {
+                            selectedNumber = (selectedNumber + delta).coerceIn(safeMin, safeMax)
+                        },
+                        border = BorderStroke(1.dp, MaterialTheme.colors.onSecondary),
+                        modifier = Modifier.heightIn(min = 40.dp)
+                    ) {
+                        Text(
+                            text = if (delta > 0) "+$delta°" else "$delta°",
+                            color = MaterialTheme.colors.onPrimary
+                        )
+                    }
+                }
+            }
         }
     }
 }

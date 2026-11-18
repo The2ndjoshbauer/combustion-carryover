@@ -39,12 +39,29 @@ fun NumberPicker(
     maxValue: Int,
     onValueChange: (Int) -> Unit
 ) {
+    val safeMin = minOf(minValue, maxValue)
+    val safeMax = maxOf(minValue, maxValue)
+    val clampedValue = initialValue.coerceIn(safeMin, safeMax)
+
     AndroidViewBinding(
-        factory = NumberPickerBinding::inflate,
+        factory = { inflater, parent, attachToParent ->
+            NumberPickerBinding.inflate(inflater, parent, attachToParent).apply {
+                numberPicker.minValue = safeMin
+                numberPicker.maxValue = safeMax
+                numberPicker.wrapSelectorWheel = false
+                numberPicker.value = clampedValue
+            }
+        },
         update = {
-            numberPicker.maxValue = maxValue
-            numberPicker.minValue = minValue
-            numberPicker.value = initialValue
+            if (numberPicker.minValue != safeMin) {
+                numberPicker.minValue = safeMin
+            }
+            if (numberPicker.maxValue != safeMax) {
+                numberPicker.maxValue = safeMax
+            }
+            if (numberPicker.value != clampedValue) {
+                numberPicker.value = clampedValue
+            }
             numberPicker.setOnValueChangedListener { _, _, newVal ->
                 onValueChange(newVal)
             }

@@ -74,7 +74,7 @@ class CombustionService : LifecycleService() {
                 settings = serviceSettings
                 serviceNotification = notification
                 this.dfuNotificationTarget = dfuNotificationTarget
-                notificationId = ThreadLocalRandom.current().asKotlinRandom().nextInt()
+                notificationId = ThreadLocalRandom.current().asKotlinRandom().nextInt(1, Int.MAX_VALUE)
                 Intent(context, CombustionService::class.java).also { intent ->
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                         context.startForegroundService(intent)
@@ -109,7 +109,15 @@ class CombustionService : LifecycleService() {
 
     private fun startForeground() {
         serviceNotification?.let {
-            startForeground(notificationId, serviceNotification)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                startForeground(
+                    notificationId,
+                    it,
+                    android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+                )
+            } else {
+                startForeground(notificationId, it)
+            }
         }
     }
 
