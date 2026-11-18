@@ -43,6 +43,7 @@ fun CookingDashboard(
     val v4Material = when (probeState.selectedMeatType.value) {
         MeatType.PORK -> MeatMaterials.PORK_SHOULDER
         MeatType.POULTRY -> MeatMaterials.POULTRY
+        MeatType.FISH -> MeatMaterials.SALMON
         else -> MeatMaterials.BEEF_BRISKET
     }
 
@@ -50,7 +51,7 @@ fun CookingDashboard(
         probeState.rawSetPointTemperatureC.value
     } else {
         when (probeState.selectedMeatType.value) {
-            MeatType.POULTRY -> 74.0
+            MeatType.POULTRY -> 68.3
             else -> 96.0
         }
     }
@@ -112,10 +113,15 @@ fun CookingDashboard(
             Spacer(modifier = Modifier.height(16.dp))
 
             V4PredictionCard(
-                currentCoreTemp = probeState.rawCoreTemperatureC.value,
-                currentSurfaceTemp = probeState.rawSurfaceTemperatureC.value,
-                targetTemp = effectiveTargetC,
-                meatType = v4Material
+                temperaturesCelsius = probeState.temperaturesCelsius.toList(),
+                coreIndex = probeState.coreIndexState.value,
+                surfaceIndex = probeState.surfaceIndexState.value,
+                currentCoreTempC = probeState.rawCoreTemperatureC.value,
+                ambientTempC = probeState.rawAmbientTemperatureC.value,
+                targetTempC = effectiveTargetC,
+                meatType = v4Material,
+                isWrapped = probeState.isWrapped.value,
+                effectiveDiffusivity = probeState.effectiveDiffusivityState.value
             )
 
             Spacer(modifier = Modifier.height(16.dp))
@@ -129,14 +135,17 @@ fun CookingDashboard(
             ) {
                 MeatButton("🥩", "Beef", probeState.selectedMeatType.value == MeatType.BEEF) {
                     onMeatSelected(MeatType.BEEF)
+                    probeState.effectiveDiffusivityState.value = MeatType.BEEF.diffusivity
                     probeState.recalculateCarryover()
                 }
                 MeatButton("🐷", "Pork", probeState.selectedMeatType.value == MeatType.PORK) {
                     onMeatSelected(MeatType.PORK)
+                    probeState.effectiveDiffusivityState.value = MeatType.PORK.diffusivity
                     probeState.recalculateCarryover()
                 }
                 MeatButton("🍗", "Poultry", probeState.selectedMeatType.value == MeatType.POULTRY) {
                     onMeatSelected(MeatType.POULTRY)
+                    probeState.effectiveDiffusivityState.value = MeatType.POULTRY.diffusivity
                     probeState.recalculateCarryover()
                 }
             }
@@ -194,35 +203,59 @@ fun MeatButton(
 
 @Composable
 fun V4PredictionCard(
-    currentCoreTemp: Double,
-    currentSurfaceTemp: Double,
-    targetTemp: Double,
-    meatType: MeatMaterials
+    temperaturesCelsius: List<Double>,
+    coreIndex: Int,
+    surfaceIndex: Int,
+    currentCoreTempC: Double,
+    ambientTempC: Double,
+    targetTempC: Double,
+    meatType: MeatMaterials,
+    isWrapped: Boolean,
+    effectiveDiffusivity: Double
 ) {
     val predictor = remember { PhysicsPredictor() }
 
     var predictionText by remember { mutableStateOf("Waiting for data...") }
     var textColor by remember { mutableStateOf(Color.DarkGray) }
 
-    LaunchedEffect(currentCoreTemp, currentSurfaceTemp, targetTemp, meatType) {
-        if (currentCoreTemp > 20.0 && currentSurfaceTemp > 20.0) {
-            predictionText = "Simulating..."
+    LaunchedEffect(
+        currentCoreTempC,
+        ambientTempC,
+        targetTempC,
+        meatType,
+        isWrapped,
+        coreIndex,
+        surfaceIndex
+    ) {
+        if (currentCoreTempC > 20.0 && ambientTempC > 20.0) {
+            predictionText = "Simulating Crank-Nicolson..."
 
-            val seconds = predictor.predictSecondsToDone(
-                currentCoreTemp = currentCoreTemp,
-                currentSurfaceTemp = currentSurfaceTemp,
-                targetTemp = targetTemp,
-                meatType = meatType
+            val seconds = predictor.predictSecondsToPull(
+                temperaturesCelsius = temperaturesCelsius,
+                coreIndex = coreIndex,
+                surfaceIndex = surfaceIndex,
+                ambientTempC = ambientTempC,
+                targetTempC = targetTempC,
+                meatType = meatType,
+                isWrapped = isWrapped,
+                customDiffusivity = effectiveDiffusivity
             )
 
-            if (seconds == -1L) {
-                predictionText = "Stall/Heat Error"
-                textColor = Color.Red
-            } else {
-                val hours = seconds / 3600
-                val minutes = (seconds % 3600) / 60
-                predictionText = "Time to Done: ${hours}h ${minutes}m"
-                textColor = Color(0xFF006400)
+            when {
+                seconds == -1L -> {
+                    predictionText = "Stall / Ambient Below Target"
+                    textColor = Color.Red
+                }
+                seconds == 0L -> {
+                    predictionText = "PULL NOW (In Pull Zone)"
+                    textColor = Combustion_Red
+                }
+                else -> {
+                    val hours = seconds / 3600
+                    val minutes = (seconds % 3600) / 60
+                    predictionText = "Time to Pull: ${hours}h ${minutes}m"
+                    textColor = Color(0xFF006400)
+                }
             }
         } else {
             predictionText = "Probe Cold / Disconnected"
@@ -237,7 +270,7 @@ fun V4PredictionCard(
     ) {
         Column(modifier = Modifier.padding(12.dp)) {
             Text(
-                text = "V4 PHYSICS ENGINE (${meatType.displayName})",
+                text = "V4 CRANK-NICOLSON ORACLE (${meatType.displayName})",
                 style = MaterialTheme.typography.overline,
                 color = Color.DarkGray
             )
@@ -247,13 +280,11 @@ fun V4PredictionCard(
                 style = MaterialTheme.typography.h6,
                 color = textColor
             )
-            if (meatType.waterContentPercent > 0.4) {
-                Text(
-                    text = "*Simulating Stall (Evaporative Cooling)",
-                    style = MaterialTheme.typography.caption,
-                    color = Color.DarkGray
-                )
-            }
+            Text(
+                text = String.format("Calibrated α: %.2f × 10⁻⁷ m²/s", effectiveDiffusivity * 1e7),
+                style = MaterialTheme.typography.caption,
+                color = Color.DarkGray
+            )
         }
     }
 }

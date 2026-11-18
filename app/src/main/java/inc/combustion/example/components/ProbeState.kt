@@ -36,6 +36,10 @@ data class ProbeState(
     val ambientTemperature: MutableState<String> = mutableStateOf(""),
     val rawCoreTemperatureC: MutableState<Double> = mutableStateOf(0.0),
     val rawSurfaceTemperatureC: MutableState<Double> = mutableStateOf(0.0),
+    val rawAmbientTemperatureC: MutableState<Double> = mutableStateOf(0.0),
+    val coreIndexState: MutableState<Int> = mutableStateOf(0),
+    val surfaceIndexState: MutableState<Int> = mutableStateOf(3),
+    val effectiveDiffusivityState: MutableState<Double> = mutableStateOf(MeatType.BEEF.diffusivity),
     val predictionState: MutableState<String> = mutableStateOf(""),
     val predictionMode: MutableState<String> = mutableStateOf(""),
     val predictionType: MutableState<String> = mutableStateOf(""),
@@ -74,7 +78,6 @@ data class ProbeState(
     val T7 : MutableState<String> = mutableStateOf("")
     val T8 : MutableState<String> = mutableStateOf("")
 
-    // V3.5 VARIABLES
     val suggestedPullTemp: MutableState<String> = mutableStateOf("---")
     val selectedMeatType: MutableState<MeatType> = mutableStateOf(MeatType.BEEF)
     val isWrapped: MutableState<Boolean> = mutableStateOf(false)
@@ -84,6 +87,9 @@ data class ProbeState(
     private var lastCoreIndex: Int = 0
     private var lastSurfaceIndex: Int = 3
     private var hasValidTemps: Boolean = false
+    private var filterInitialized: Boolean = false
+    private var previousFilteredTempsC: DoubleArray? = null
+    private var lastUpdateTimestampMs: Long = 0L
     val isUploading = mutableStateOf(false)
 
     fun updateProbeState(state: Probe, downloads: Int) {
@@ -102,17 +108,64 @@ data class ProbeState(
         samplePeriod.value = if(state.sessionInfo != null) String.format("%d ms", state.sessionInfo?.let { it.samplePeriod.toLong() } ) else ""
         batteryStatus.value = when(state.batteryStatus) { ProbeBatteryStatus.LOW_BATTERY -> "Low"; ProbeBatteryStatus.OK -> "Good" }
 
+        lastCoreIndex = state.virtualSensors.virtualCoreSensor.ordinal
+        lastSurfaceIndex = (state.virtualSensors.virtualSurfaceSensor.ordinal + 3).coerceIn(0, 7)
+        coreIndexState.value = lastCoreIndex
+        surfaceIndexState.value = lastSurfaceIndex
+
         if(state.temperaturesCelsius != null) {
-            val temps = state.temperaturesCelsius!!.values
-            for (i in 0..7) { if (i < temps.size) temperaturesCelsius[i] = temps[i] }
-            T1.value = f(temps[0]); T2.value = f(temps[1]); T3.value = f(temps[2]); T4.value = f(temps[3])
-            T5.value = f(temps[4]); T6.value = f(temps[5]); T7.value = f(temps[6]); T8.value = f(temps[7])
+            val rawTemps = state.temperaturesCelsius!!.values
+            val nowMs = System.currentTimeMillis()
+            val dtSec = if (lastUpdateTimestampMs > 0L) (nowMs - lastUpdateTimestampMs) / 1000.0 else 5.0
+            val snapshotPrev = if (filterInitialized) DoubleArray(8) { temperaturesCelsius[it] } else null
+
+            val ambC = state.ambientTemperatureCelsius ?: rawTemps.getOrElse(7) { 0.0 }
+            val surfC = state.surfaceTemperatureCelsius ?: rawTemps.getOrElse(lastSurfaceIndex) { 0.0 }
+
+            // Stem-effect bias correction when high ambient heat conducts down the steel shaft
+            val stemBiasC = if (ambC - surfC > 80.0) ((ambC - surfC - 80.0) * 0.015).coerceAtMost(1.8) else 0.0
+
+            for (i in 0..7) {
+                if (i < rawTemps.size) {
+                    val corrected = if (i == lastSurfaceIndex - 1 && i > lastCoreIndex) {
+                        rawTemps[i] - stemBiasC
+                    } else {
+                        rawTemps[i]
+                    }
+                    // 1D Kalman / Exponential Moving Average smoothing (alpha = 0.35)
+                    temperaturesCelsius[i] = if (!filterInitialized) {
+                        corrected
+                    } else {
+                        0.35 * corrected + 0.65 * temperaturesCelsius[i]
+                    }
+                }
+            }
+            filterInitialized = true
+            lastUpdateTimestampMs = nowMs
+
+            // Online Inverse Heat Transfer Problem (IHTP) diffusivity update
+            val estimatedAlpha = predictor.estimateEffectiveDiffusivity(
+                currentTemps = temperaturesCelsius,
+                prevTemps = snapshotPrev ?: previousFilteredTempsC,
+                dtSeconds = dtSec.coerceAtLeast(1.0),
+                coreIndex = lastCoreIndex,
+                surfaceIndex = lastSurfaceIndex,
+                baseDiffusivity = selectedMeatType.value.diffusivity
+            )
+            effectiveDiffusivityState.value = 0.25 * estimatedAlpha + 0.75 * effectiveDiffusivityState.value
+            previousFilteredTempsC = snapshotPrev
+
+            T1.value = f(temperaturesCelsius[0]); T2.value = f(temperaturesCelsius[1])
+            T3.value = f(temperaturesCelsius[2]); T4.value = f(temperaturesCelsius[3])
+            T5.value = f(temperaturesCelsius[4]); T6.value = f(temperaturesCelsius[5])
+            T7.value = f(temperaturesCelsius[6]); T8.value = f(temperaturesCelsius[7])
         }
 
         fun fmt(v: Double?) = v?.let { String.format("%.1f", convertTemperature(it)) } ?: "---"
 
         rawCoreTemperatureC.value = state.coreTemperatureCelsius ?: 0.0
         rawSurfaceTemperatureC.value = state.surfaceTemperatureCelsius ?: 0.0
+        rawAmbientTemperatureC.value = state.ambientTemperatureCelsius ?: 0.0
 
         instantRead.value = fmt(state.instantReadCelsius)
         coreTemperature.value = fmt(state.coreTemperatureCelsius)
@@ -132,9 +185,6 @@ data class ProbeState(
         setPointTemperature.value = state.setPointTemperatureCelsius?.let { convertTemperature(it).roundToInt().toString() } ?: ""
 
         activeSetPointC = state.setPointTemperatureCelsius
-        lastCoreIndex = state.virtualSensors.virtualCoreSensor.ordinal
-        // VirtualSurfaceSensor enum starts at T4 (index 3 in the 8-sensor array)
-        lastSurfaceIndex = state.virtualSensors.virtualSurfaceSensor.ordinal + 3
         hasValidTemps = (state.coreTemperatureCelsius != null && state.temperaturesCelsius != null)
 
         recalculateCarryover()
@@ -149,7 +199,8 @@ data class ProbeState(
                 coreIndex = lastCoreIndex,
                 surfaceIndex = lastSurfaceIndex,
                 meatType = selectedMeatType.value,
-                isWrapped = isWrapped.value
+                isWrapped = isWrapped.value,
+                customAlpha = effectiveDiffusivityState.value
             )
             suggestedPullTemp.value = String.format("%.1f", convertTemperature(pullAtC))
         } else {
