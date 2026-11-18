@@ -1,5 +1,5 @@
 /*
- * Project: Combustion Inc. Android Example
+ * Project: Combustion Inc. Android Framework
  * File: Combustion.kt
  * Author: https://github.com/miwright2
  *
@@ -25,12 +25,11 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
-
 package inc.combustion.framework
 
 class Combustion {
     companion object {
-        const val FRAMEWORK_VERSION_NAME = BuildConfig.VERSION_NAME
-        const val FRAMEWORK_BUILD_TYPE = BuildConfig.BUILD_TYPE
+        const val FRAMEWORK_VERSION_NAME: String = BuildConfig.VERSION_NAME
+        const val FRAMEWORK_BUILD_TYPE: String = BuildConfig.BUILD_TYPE
     }
 }
