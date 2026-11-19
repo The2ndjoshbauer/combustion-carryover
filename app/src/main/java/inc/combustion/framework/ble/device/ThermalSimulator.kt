@@ -1,6 +1,8 @@
 package inc.combustion.framework.ble.device
 
+import kotlin.math.exp
 import kotlin.math.max
+import kotlin.math.pow
 
 class ThermalSimulator(
     private val diffusivity: Double,
@@ -8,9 +10,18 @@ class ThermalSimulator(
     private val numNodes: Int = 30,
     private val waterContentPercent: Double = 0.70,
     private val thermalConductivity: Double = 0.48,
+    private val meatMaterial: MeatMaterials? = null,
+    initialSurfaceMoisturePhi: Double = 0.85,
     initialTemp: Double = 20.0,
     initialProfile: DoubleArray? = null
 ) {
+    companion object {
+        private const val STEFAN_BOLTZMANN = 5.670374419e-8
+        private const val SURFACE_EMISSIVITY = 0.80
+        private const val CRITICAL_MOISTURE_FRACTION = 0.52
+        private const val LATENT_HEAT_VAPORIZATION_J_PER_KG = 2.257e6
+    }
+
     // Node 0 = Core (r = 0), Node numNodes - 1 = Surface (r = L)
     private val temps = DoubleArray(numNodes)
     private val nextTemps = DoubleArray(numNodes)
@@ -23,7 +34,7 @@ class ThermalSimulator(
     private val cPrime = DoubleArray(numNodes)
     private val dPrime = DoubleArray(numNodes)
 
-    private var remainingSurfaceMoisture = waterContentPercent
+    private var remainingSurfaceMoisture = waterContentPercent * initialSurfaceMoisturePhi.coerceIn(0.1, 1.0)
     private val dx = max(0.0005, thicknessMeters / max(1, numNodes - 1))
 
     init {
@@ -47,9 +58,26 @@ class ThermalSimulator(
         heatTransferCoefficient: Double = 20.0,
         dtSeconds: Double = 1.0
     ): DoubleArray {
-        val r = (diffusivity * dtSeconds) / (2.0 * dx * dx)
-        val bi = (heatTransferCoefficient * dx) / thermalConductivity
         val last = numNodes - 1
+        val meanTempC = 0.5 * (temps[0] + temps[last])
+        val choiSnapshot = meatMaterial?.evaluateAt(meanTempC)
+
+        val kEffective = choiSnapshot?.kMeanWPerMK ?: thermalConductivity
+        val rhoCp = if (choiSnapshot != null) {
+            choiSnapshot.densityKgM3 * choiSnapshot.specificHeatJPerKgK
+        } else {
+            kEffective / max(1e-8, diffusivity)
+        }
+        val alphaEffective = if (choiSnapshot != null) {
+            diffusivity.coerceIn(
+                0.85 * choiSnapshot.alphaPerpM2PerS,
+                1.15 * choiSnapshot.alphaParallelM2PerS
+            )
+        } else {
+            diffusivity
+        }
+
+        val r = (alphaEffective * dtSeconds) / (2.0 * dx * dx)
 
         // 1. Center Core Node (i = 0, cylindrical symmetry dT/dr = 0)
         a[0] = 0.0
@@ -67,16 +95,39 @@ class ThermalSimulator(
             d[i] = r * wMinus * temps[i - 1] + (1.0 - 2.0 * r) * temps[i] + r * wPlus * temps[i + 1]
         }
 
-        // 3. Surface Node (i = last, convection + latent heat evaporative stall)
+        // 3. Surface Node (i = last: Convection + Stefan-Boltzmann Radiation + Falling-Rate Evaporation)
         val surfTemp = temps[last]
+        val surfK = surfTemp + 273.15
+        val ambK = ambientTemp + 273.15
+
+        // Linearized Stefan-Boltzmann radiative coefficient h_rad = eps * sigma * (T_s + T_amb) * (T_s^2 + T_amb^2)
+        val hRad = SURFACE_EMISSIVITY * STEFAN_BOLTZMANN *
+            (surfK + ambK) * (surfK * surfK + ambK * ambK)
+        val hTotal = heatTransferCoefficient + hRad
+        val bi = (hTotal * dx) / kEffective
+
+        // Falling-rate crust drying regime: phi_w = 1.0 above M_crit, quadratic decay below M_crit
+        val phiW = getSurfaceMoisturePhi()
         var effectiveBi = bi
         var evaporativeSink = 0.0
 
-        if (surfTemp >= 68.0 && remainingSurfaceMoisture > 0.05 && ambientTemp > surfTemp) {
-            val stallFactor = if (surfTemp in 68.0..82.0) 0.28 else 0.60
-            effectiveBi *= stallFactor
-            evaporativeSink = 0.02 * (surfTemp - 65.0).coerceAtLeast(0.0) * dtSeconds * 0.05
-            remainingSurfaceMoisture = max(0.0, remainingSurfaceMoisture - 0.00003 * dtSeconds)
+        if (waterContentPercent > 0.01 && surfTemp >= 58.0 && remainingSurfaceMoisture > 0.03 && ambientTemp > surfTemp) {
+            // Tetens saturation vapor pressure driving mass flux during active cooking
+            val pSatSurfKPa = 0.61078 * exp((17.27 * surfTemp.coerceAtMost(104.0)) / (surfTemp.coerceAtMost(104.0) + 237.3))
+            val massFluxKgPerM2S = 4.8e-6 * heatTransferCoefficient * phiW * (pSatSurfKPa - 1.5).coerceAtLeast(0.0)
+            val qEvapWPerM2 = LATENT_HEAT_VAPORIZATION_J_PER_KG * massFluxKgPerM2S
+
+            // In the 68-84°C wet-bulb stall zone, latent heat absorbs a large share of convective input;
+            // as remainingSurfaceMoisture drops below M_crit, phiW falls quadratically and the crust dries past 100°C.
+            val wetBulbDamping = if (surfTemp in 66.0..84.0) (1.0 - 0.55 * phiW) else (1.0 - 0.25 * phiW)
+            effectiveBi *= wetBulbDamping.coerceIn(0.32, 1.0)
+            evaporativeSink = ((1.2 * qEvapWPerM2 * dtSeconds) / (rhoCp * dx)).coerceAtMost(1.4 * dtSeconds)
+
+            val density = choiSnapshot?.densityKgM3 ?: 1050.0
+            remainingSurfaceMoisture = max(
+                0.03,
+                remainingSurfaceMoisture - (massFluxKgPerM2S * dtSeconds) / (density * dx * 5.5)
+            )
         }
 
         a[last] = -2.0 * r
@@ -111,4 +162,13 @@ class ThermalSimulator(
     fun getCoreTemp(): Double = temps[0]
 
     fun getCurrentProfile(): DoubleArray = temps.copyOf()
+
+    fun getSurfaceMoisturePhi(): Double {
+        if (waterContentPercent <= 0.01) return 0.0
+        return if (remainingSurfaceMoisture >= CRITICAL_MOISTURE_FRACTION) {
+            1.0
+        } else {
+            (remainingSurfaceMoisture / CRITICAL_MOISTURE_FRACTION).pow(2.0).coerceIn(0.05, 1.0)
+        }
+    }
 }

@@ -208,18 +208,12 @@ class DetailsViewModel (
         val createdDateTime = now.format(headerDateTimeFormatter)
 
         val meatType = probeState.selectedMeatType.value
-        val isWrapped = probeState.isWrapped.value
+        val restingEnv = probeState.selectedRestingEnvironment.value
+        val isWrapped = restingEnv.isInsulated
         val currentAlpha = probeState.effectiveDiffusivityState.value
-        val effectiveTargetC = if (probeState.setPointTemperature.value.isNotEmpty()) {
-            probeState.rawSetPointTemperatureC.value
-        } else {
-            when (meatType) {
-                inc.combustion.example.MeatType.POULTRY -> 68.3
-                else -> 96.0
-            }
-        }
+        val effectiveTargetC = probeState.getEffectiveTargetTempC()
 
-        // Header metadata (standard + Glide Path physics parameters)
+        // Header metadata (standard + Glide Path V5 physics parameters)
         sb.appendLine("Combustion Inc. Probe Data")
         sb.appendLine("App: $appVersionName")
         sb.appendLine("CSV version: $csvVersion")
@@ -230,18 +224,31 @@ class DetailsViewModel (
         sb.appendLine("Sample Period: $samplePeriod")
         sb.appendLine("Created: $createdDateTime")
         sb.appendLine("Glide Path Meat Type: ${meatType.name} (${meatType.displayName})")
+        sb.appendLine("Resting Environment Preset: ${restingEnv.name} (${restingEnv.displayName})")
         sb.appendLine("Wrapped / Insulated: $isWrapped")
         sb.appendLine(String.format(Locale.US, "Calibrated Effective Diffusivity (m2/s): %.4e", currentAlpha))
+        sb.appendLine(String.format(Locale.US, "Surface Moisture Factor (phi_w): %.3f", probeState.surfaceMoisturePhiState.value))
         sb.appendLine("Current Suggested Pull Temp: ${probeState.suggestedPullTemp.value}")
+        sb.appendLine("Current Time To Peak: ${probeState.timeToPeakMinutes.value}")
+        sb.appendLine(
+            String.format(
+                Locale.US,
+                "USDA FSIS Salmonella Log10 Kill (Live -> Projected Post-Rest): %.2f -> %.2f",
+                probeState.livePasteurizationLog10.value,
+                probeState.projectedRestPasteurizationLog10.value
+            )
+        )
+        sb.appendLine(String.format(Locale.US, "Arrhenius Collagen Conversion (%%): %.2f", probeState.collagenConversionPct.value))
         sb.appendLine()
 
-        // Column headers (Standard 23 + 6 Glide Path physics columns)
+        // Column headers (Standard 23 + 6 V4 Glide Path columns + 7 V5 Physics columns)
         sb.appendLine(
             "Timestamp,SessionID,SequenceNumber,T1,T2,T3,T4,T5,T6,T7,T8," +
                 "VirtualCoreTemperature,VirtualSurfaceTemperature,VirtualAmbientTemperature," +
                 "EstimatedCoreTemperature,PredictionSetPoint,VirtualCoreSensor,VirtualSurfaceSensor," +
                 "VirtualAmbientSensor,PredictionState,PredictionMode,PredictionType,PredictionValueSeconds," +
-                "MeatType,IsWrapped,EffectiveDiffusivity_m2s,PredictedRestingPeakCoreC,PredictedCarryoverRiseC,SuggestedPullTempC"
+                "MeatType,IsWrapped,EffectiveDiffusivity_m2s,PredictedRestingPeakCoreC,PredictedCarryoverRiseC,SuggestedPullTempC," +
+                "RestingEnvironment,TimeToPeakMin,SurfaceMoisturePhi,PasteurizationLiveLog10,PasteurizationProjectedRestLog10,CollagenConversionPct,FlipOrLidEvent"
         )
 
         val predictor = inc.combustion.example.CarryoverPredictor()
@@ -250,6 +257,10 @@ class DetailsViewModel (
         if (logs.isNotEmpty()) {
             val startTime = logs.first().timestamp.time
             var runningAlpha = meatType.diffusivity
+            var runningPhi = 0.85
+            var runningLiveLog10 = 0.0
+            var runningComeUpMin = 0.0
+            var runningIntactCollagen = 1.0
             var prevTemps: DoubleArray? = null
             var prevTimestampMs = startTime
 
@@ -268,36 +279,80 @@ class DetailsViewModel (
                     dtSeconds = dtSec,
                     coreIndex = coreIdx,
                     surfaceIndex = surfIdx,
-                    baseDiffusivity = meatType.diffusivity
+                    baseDiffusivity = meatType.diffusivity,
+                    meatType = meatType
                 )
                 runningAlpha = 0.25 * estimatedAlpha + 0.75 * runningAlpha
+
+                val coreTempC = dataPoint.virtualCoreTemperature
+                val surfTempC = dataPoint.virtualSurfaceTemperature
+                val ambTempC = dataPoint.virtualAmbientTemperature
+                val subSurfTempC = rawVals.getOrElse((surfIdx - 1).coerceAtLeast(0)) { surfTempC }
+
+                runningPhi = predictor.estimateSurfaceMoisturePhi(
+                    surfaceTempC = surfTempC,
+                    subSurfaceTempC = subSurfTempC,
+                    ambientTempC = ambTempC,
+                    previousPhi = runningPhi,
+                    dtSeconds = dtSec,
+                    isWrapped = isWrapped
+                )
+
+                if (coreTempC in 10.0..54.44) {
+                    runningComeUpMin += dtSec / 60.0
+                }
+                val slowComeUpPenalty = runningComeUpMin > 120.0
+                runningLiveLog10 = (runningLiveLog10 +
+                    inc.combustion.example.components.ThermalDoseIntegrator.salmonellaLog10RatePerSecond(
+                        tempC = coreTempC,
+                        meatType = meatType,
+                        slowComeUpAdapted = slowComeUpPenalty
+                    ) * dtSec).coerceAtMost(15.0)
+
+                val meanMeatTempC = 0.6 * coreTempC + 0.4 * surfTempC
+                val kColl = inc.combustion.example.components.ThermalDoseIntegrator.collagenHydrolysisRatePerSecond(meanMeatTempC)
+                if (kColl > 0.0) {
+                    runningIntactCollagen *= kotlin.math.exp(-kColl * dtSec)
+                }
+                val rowCollagenPct = ((1.0 - runningIntactCollagen) * 100.0).coerceIn(0.0, 100.0)
+
                 prevTemps = DoubleArray(8) { idx -> rawVals.getOrElse(idx) { 0.0 } }
                 prevTimestampMs = timestamp
 
                 val spanCount = surfIdx - coreIdx + 1
                 val activeProfile = DoubleArray(spanCount) { idx -> rawVals.getOrElse(coreIdx + idx) { 0.0 } }
                 val radiusMeters = (surfIdx - coreIdx) * sensorSpacingMeters
-
-                val peakCoreC = predictor.predictPeakCoreTemp(
-                    profile = activeProfile,
-                    radiusMeters = radiusMeters,
-                    alpha = runningAlpha,
-                    thermalConductivity = meatType.thermalConductivity,
-                    isWrapped = isWrapped
-                )
-                val coreTempC = dataPoint.virtualCoreTemperature
-                val carryoverRiseC = (peakCoreC - coreTempC).coerceAtLeast(0.0)
                 val rowTargetC = if (dataPoint.predictionSetPointTemperature > 0.0) {
                     dataPoint.predictionSetPointTemperature
                 } else {
                     effectiveTargetC
                 }
-                val suggestedPullC = rowTargetC - carryoverRiseC
+
+                val restingResult = predictor.predictRestingTrajectory(
+                    profile = activeProfile,
+                    radiusMeters = radiusMeters,
+                    alpha = runningAlpha,
+                    meatType = meatType,
+                    restingEnvironment = restingEnv,
+                    surfaceMoisturePhi = runningPhi,
+                    targetTempC = rowTargetC
+                )
+                val peakCoreC = restingResult.peakCoreTempC
+                val carryoverRiseC = (peakCoreC - coreTempC).coerceAtLeast(0.0)
+                val suggestedPullC = restingResult.pullTempC
+                val timeToPeakMin = restingResult.timeToPeakSeconds / 60.0
+                val restLog10Add = inc.combustion.example.components.ThermalDoseIntegrator.integrateTrajectorySalmonellaLog10(
+                    trajectoryC = restingResult.restingCoreTrajectoryC,
+                    dtSeconds = restingResult.dtStepSeconds,
+                    meatType = meatType,
+                    slowComeUpAdapted = slowComeUpPenalty
+                )
+                val projectedRestLog10 = (runningLiveLog10 + restLog10Add).coerceAtMost(15.0)
 
                 sb.appendLine(
                     String.format(
                         Locale.US,
-                        "%.3f,%s,%s,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%s,%s,%s,%s,%s,%s,%d,%s,%b,%.4e,%.2f,%.2f,%.2f",
+                        "%.3f,%s,%s,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%s,%s,%s,%s,%s,%s,%d,%s,%b,%.4e,%.2f,%.2f,%.2f,%s,%.2f,%.3f,%.2f,%.2f,%.2f,%s",
                         elapsed,
                         dataPoint.sessionId.toString(),
                         dataPoint.sequenceNumber.toString(),
@@ -320,7 +375,14 @@ class DetailsViewModel (
                         runningAlpha,
                         peakCoreC,
                         carryoverRiseC,
-                        suggestedPullC
+                        suggestedPullC,
+                        restingEnv.name,
+                        timeToPeakMin,
+                        runningPhi,
+                        runningLiveLog10,
+                        projectedRestLog10,
+                        rowCollagenPct,
+                        probeState.lastFlipOrLidEvent.value
                     )
                 )
             }
@@ -333,21 +395,25 @@ class DetailsViewModel (
             val activeProfile = DoubleArray(spanCount) { idx -> temps.getOrElse(coreIdx + idx) { 0.0 } }
             val radiusMeters = (surfIdx - coreIdx) * sensorSpacingMeters
 
-            val peakCoreC = predictor.predictPeakCoreTemp(
+            val restingResult = predictor.predictRestingTrajectory(
                 profile = activeProfile,
                 radiusMeters = radiusMeters,
                 alpha = currentAlpha,
-                thermalConductivity = meatType.thermalConductivity,
-                isWrapped = isWrapped
+                meatType = meatType,
+                restingEnvironment = restingEnv,
+                surfaceMoisturePhi = probeState.surfaceMoisturePhiState.value,
+                targetTempC = effectiveTargetC
             )
+            val peakCoreC = restingResult.peakCoreTempC
             val coreTempC = probeState.rawCoreTemperatureC.value
             val carryoverRiseC = (peakCoreC - coreTempC).coerceAtLeast(0.0)
-            val suggestedPullC = effectiveTargetC - carryoverRiseC
+            val suggestedPullC = restingResult.pullTempC
+            val timeToPeakMin = restingResult.timeToPeakSeconds / 60.0
 
             sb.appendLine(
                 String.format(
                     Locale.US,
-                    "%.3f,%s,%s,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%s,%s,%s,%s,%s,%s,%d,%s,%b,%.4e,%.2f,%.2f,%.2f",
+                    "%.3f,%s,%s,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%s,%s,%s,%s,%s,%s,%d,%s,%b,%.4e,%.2f,%.2f,%.2f,%s,%.2f,%.3f,%.2f,%.2f,%.2f,%s",
                     0.0f,
                     probe?.sessionInfo?.sessionID?.toString() ?: "LIVE",
                     probe?.maxSequenceNumber?.toString() ?: "0",
@@ -370,7 +436,14 @@ class DetailsViewModel (
                     currentAlpha,
                     peakCoreC,
                     carryoverRiseC,
-                    suggestedPullC
+                    suggestedPullC,
+                    restingEnv.name,
+                    timeToPeakMin,
+                    probeState.surfaceMoisturePhiState.value,
+                    probeState.livePasteurizationLog10.value,
+                    probeState.projectedRestPasteurizationLog10.value,
+                    probeState.collagenConversionPct.value,
+                    probeState.lastFlipOrLidEvent.value
                 )
             )
         }

@@ -1,0 +1,283 @@
+﻿Designing a Physics-Based Software Algorithm for Carryover Cooking Prediction
+A production-grade carryover cooking algorithm cannot rely on static pull-temperature offsets (such as a fixed 5–10°F rule of thumb) or empirical multipliers layered onto a cook-time countdown. Because real-world carryover ranges from roughly 0°F in long low-and-slow smokes to +3.9–19.0°F in controlled ThermoWorks oven tests—and up to 30–40°F in community reports of high-heat steaks and salmon—an accurate software engine must separate internal state estimation during the cook from boundary-switched forward integration for the rest. Specifically, the algorithm must track or infer the spatial temperature profile T(\mathbf{x}, t) inside the protein up to the current timestep, then integrate the transient heat conduction equation forward under the resting boundary conditions until the core cooling rate turns non-positive (\frac{dT_{\text{core}}}{dt} \le 0).
+At the core of this architecture is a coupled inverse-forward loop. During active cooking, a state estimator—such as an Extended Kalman Filter (EKF) or a regularized reduced-order model (ROM)—assimilates noisy, sparse sensor readings (e.g., core, mid-depth, surface, and ambient channels) to estimate both the unmeasured interior temperature profile and effective boundary heat fluxes. At each prediction cycle, the algorithm clones that estimated spatial profile, swaps the cooking boundary conditions for a user-selected resting regime (uncovered air, foil, butcher paper, or insulated hold), and solves forward to compute the predicted peak core temperature \hat{T}_{\text{peak}}, time to peak t_{\text{peak}}, and cumulative thermal dose.
+Three physical subtleties determine whether such an algorithm succeeds or fails in real kitchens. First, surface evaporation and moisture depletion—not protein denaturation enthalpy—govern when the surface breaks free from wet-bulb clamping to build a high-energy outer shell. Second, multi-sensor probes substantially outperform single-tip probes because off-center placement and axial stem conduction distort raw point readings. Third, for low-and-slow barbecue or extended warm holds, peak temperature matters less than integrating time-temperature lethality and first-order collagen hydrolysis across the entire heating and resting trajectory.
+Governing Physics and Spatial Solver Architecture
+Carryover cooking is a direct consequence of the second law of thermodynamics and transient heat diffusion: once external heating stops, thermal energy stored in the hotter outer shell conducts simultaneously inward toward the cooler core and outward to the resting environment. In software, modeling this requires solving the unsteady heat conduction partial differential equation (PDE) over a spatial domain rather than a zero-dimensional (0D) lumped thermal node:
+\rho c_p(T) \frac{\partial T}{\partial t} = \nabla \cdot \left( k(T) \nabla T \right) + \dot{q}_{\text{rxn}}
+where \rho is density, c_p is specific heat capacity, k is thermal conductivity, and \dot{q}_{\text{rxn}} represents internal reaction enthalpy. Single-exponential stabilization predictors—such as finite impulse response (FIR) filters built around T(t) = T_F - (T_F - T_R)e^{-t/\tau} for probe equilibration—cannot predict carryover because a resting core exhibits non-monotonic overshoot before decaying toward ambient temperature.
+For embedded thermometer firmware or mobile apps running on low-power processors, full 3D finite-element CFD is unnecessary during live prediction. A 1D spatial discretization (planar slab for steaks or chops, infinite cylinder for roasts or tenderloins, or sphere for compact cuts) using ~50 spatial nodes solved via implicit Euler, Crank–Nicolson, or alternating-direction finite-difference timestepping is unconditionally stable and runs in real time on embedded hardware. Modeling the full thickness [0, L] rather than assuming half-thickness symmetry [0, L/2] is essential because pan searing, grilling, and uneven oven radiation create asymmetric top-and-bottom heat fluxes.
+A frequent modeling question is whether endothermic protein denaturation or collagen melting requires an explicit \dot{q}_{\text{rxn}} sink in the bulk PDE. Differential scanning calorimetry (DSC) studies on beef, pork, chicken, and turkey muscle measure three main irreversible endothermic transitions: myosin (peak ~43–58°C), sarcoplasmic proteins and collagen shrinkage (~60–67°C), and actin (~76–83°C). Across that entire denaturation spectrum, however, total transition enthalpy \Delta H_d is only 2.3–3.9 J/g (lowest in beef, higher in poultry and unaged muscle). Because muscle specific heat c_p is approximately 3.3–3.6 J/(g·K), total protein denaturation absorbs roughly 1°C equivalent of sensible heat spread across a ~40°C cooking window—aligning with food-engineering formulations that omit reaction enthalpy in the bulk energy equation and with physicist Greg Blonder's pit tests reported on AmazingRibs.com showing that collagen melting cannot account for the heat sink of a barbecue stall. Protein shrinkage still affects carryover profoundly, but via mass transfer: myofibrillar contraction reduces water-holding capacity, increases outer-layer hydraulic permeability, and pushes liquid moisture to the surface where evaporation absorbs roughly 2,350 J/g.
+Cooking Regimes and Surface Moisture Dynamics
+The magnitude of carryover depends on the thermal energy stored in the exterior shell relative to the core at pull time (\nabla T and the surface-to-core temperature spread). Hot-and-fast cooking packs steep thermal gradients into the outer millimeters, whereas low-and-slow cooking allows conductive diffusion to keep pace with surface heating, producing a nearly flat internal profile.
+Protein and Cut
+	Weight (g)
+	Oven Temp (°F)
+	Pull Core Temp (°F)
+	Peak Core Temp (°F)
+	Measured Carryover (°F / °C)
+	Pork chop
+	150
+	300
+	140.0
+	144.9
+	+4.9 / +2.7
+	Pork chop
+	150
+	425
+	140.0
+	151.5
+	+11.5 / +6.4
+	Beef chunk
+	260
+	300
+	140.0
+	148.4
+	+8.4 / +4.7
+	Beef chunk
+	286
+	425
+	140.0
+	153.2
+	+13.2 / +7.3
+	Pork chunk
+	274
+	300
+	140.0
+	143.9
+	+3.9 / +2.2
+	Pork chunk
+	340
+	425
+	140.0
+	—
+	+11.0 / +6.1
+	Pork loin
+	—
+	300
+	140.0
+	146.5
+	+6.5 / +3.6
+	Pork loin
+	—
+	425
+	140.0
+	155.5
+	+15.5 / +8.6
+	Salmon
+	276
+	300
+	140.0
+	147.3
+	+7.3 / +4.1
+	Salmon
+	314
+	425
+	140.0
+	159.0
+	+19.0 / +10.6
+	Chicken breast
+	198
+	300
+	157.0
+	162.9
+	+7.9* / +4.4
+	Chicken breast
+	245
+	425
+	157.0
+	169.9
+	+12.9 / +7.2
+	Table 1: Empirical oven-roasting carryover measurements reported by ThermoWorks. Note: In the 300°F chicken breast row, the source reports a 157°F pull and 162.9°F peak alongside a 7.9°F carryover delta (a 2.0°F arithmetic discrepancy in the source table); in the 425°F pork chunk row, peak temperature was omitted from the excerpted text while +11.0°F carryover was reported in prose.
+To reproduce both high-heat overshoot and the low-and-slow barbecue stall, the boundary condition at the food surface must couple convection, thermal radiation, and latent evaporative cooling:
+-k \frac{\partial T}{\partial n}\bigg\vert{}_{\text{surf}} = h_c \left(T_s - T_{\text{amb}}\right) + \varepsilon \sigma \left(T_s^4 - T_{\text{wall}}^4\right) + L_v \, j_{\text{evap}}(T_s, M_s, \text{RH}, u_{\text{a[span_5](start_span)[span_5](end_span)ir}})
+where h_c is the convective heat transfer coefficient, \varepsilon is surface emissivity, \sigma is the Stefan–Boltzmann constant, L_v is the latent heat of vaporization, and j_{\text{evap}} is the surface evaporative mass flux. Blonder's smoker and oven experiments reported on AmazingRibs.com showed that the barbecue stall (typically 150–180°F, lasting up to 6–7 hours in 225°F cookers) occurs when convective and radiative heat input equilibrates with evaporative cooling from surface moisture. Pure beef fat and dry oil-sand mixtures climbed through the stall zone without pausing, whereas a water-soaked sponge stalled like a brisket until it dried.
+For software designers, modeling the transition from wet-bulb evaporation to falling-rate crust drying is the single highest-leverage physics requirement. Comparing two 1D PDE formulations demonstrates why. When a solver assumes an unconstrained, continuously saturated wet-bulb surface below 100°C without moisture depletion, latent cooling pins a 5.0 cm beef cut in a 220°C oven to only a 5.9°C surface-to-core gradient and +0.8°C (+1.4°F) of carryover—sharply underpredicting the +11.5°F to +19.0°F seen in real 425°F ovens. Under the same unconstrained wet-bulb assumption at 107°C, a 10.0 cm roast stalls indefinitely near 37.1°C (hitting the 600-minute simulation limit) with near-zero gradient (1.0°C).
+In physical meat, internal water transport to the surface is driven by protein-denaturation swelling pressure following Darcy's law (\rho_f(1-\phi)\mathbf{w} = -\frac{\kappa}{\eta}\nabla \pi_{\text{sw}}) rather than pure Fickian diffusion. Once surface evaporation outpaces internal hydraulic supply and surface water drops below a critical moisture threshold M_{\text{crit}}, evaporation falls off (modeled in one pellet-grill formulation as scaling with w^2 below M_{\text{crit}}, or via an empirical moisture-availability factor \phi_w \in [0[span_97](start_span)[span_97](end_span)[span_98](start_span)[span_98](end_span)[span_99](start_span)[span_99](end_span), 1]). Only then does the crust dry past 100°C into the Maillard regime—creating the steep thermal gradients that produce +13.2°C to +16.9°C carryover in pure-conduction high-heat models and real roasts.
+Conversely, in low-and-slow cooks pulled at 195–203°F (91–95°C) after the stall breaks, the outer shell and core sit only a few degrees apart. Because high surface temperature drives strong radiative, convective, and residual evaporative heat loss immediately upon removal, predictive-thermometer users and developers report near-zero carryover—core temperature plateaus or begins drifting downward almost immediately. Combustion Inc. engineers note that at very high pull temperatures, post-pull evaporative cooling can reverse the usual rule that higher pull temperatures yield larger carryover.
+Resting Environments and Boundary Conditions
+When food leaves the cooker, the software must immediately switch from cooking boundary parameters to resting boundary parameters. Uncertainties in the resting environment explain much of the carryover variance encountered in practice.
+Resting Environment
+	Moisture Permeability & Evaporation
+	Convective & Radiative Regime
+	Algorithmic Impact on Carryover
+	Uncovered on wire rack
+	High; evaporation active on all exposed faces
+	Natural/draft air cooling (combined h ≈ 10–19 W/(m²·K) in meat/oven studies; ε ≈ 0.8)
+	Lowest peak carryover, shortest time to peak, fastest post-peak cooling; preserves crust
+	Uncovered on wood board
+	Top/sides evaporate; bottom face j_evap = 0
+	Top/sides lose heat to air; low conductive sink at bottom
+	Slightly higher bottom retention than wire rack; moderate carryover
+	Loosely tented in foil
+	Partial steam escape; convective drafts reduced
+	Moderate radiation shielding; humid microclimate
+	Intermediate carryover; softens crust if overly sealed
+	Tightly wrapped in foil
+	Near-zero permeability; ~100% RH suppresses evaporation (~20× reduction in one grill model)
+	Halves radiative loss; free juices bridge foil-to-meat air gaps to boost contact conduction
+	Boosts peak carryover and roughly doubles time to peak in 1D simulations
+	Butcher paper wrap
+	Semi-porous; allows partial vapor escape
+	Blocks drafts and traps rendered fat while breathing
+	Intermediate between uncovered and foil (lags foil by ~1–2 hr during active BBQ cooks)
+	Insulated Cambro / cooler
+	Sealed/toweled vapor barrier; minimal evaporation
+	Near-adiabatic (modeled with low h_rest ≈ 2 W/(m²·K) and warm 60°C air)
+	Converts rest into multi-hour hot hold; requires pre-cooling (e.g., 200°F to 175°F) to halt cooking
+	Table 2: Boundary condition parameterization across common resting environments.
+Three resting-boundary mechanics require careful treatment in software. First, in uncovered rests, faster airflow does not simply increase convective cooling linearly; higher air velocity raises the mass-transfer coefficient via the Lewis analogy, accelerating surface evaporation. As Combustion Inc. founder Chris Young has noted, the balance between convection and evaporative cooling can flip so that faster airflow depresses surface temperature more strongly.
+Second, tight foil wrapping suppresses evaporation, redirecting energy away from latent heat loss and into inward conduction—raising peak core temperature and extending time to peak. In matched 1D simulations of a 5.0 cm steak pulled at 48°C, turning off post-pull evaporation and halving effective resting heat transfer from 12 to 6 W/(m²·K) increased carryover from +0.8°C to +1.3°C (+62.5%) and extended t_{\text{peak}} from 6.5 min to 13.5 min. However, as Blonder's foil experiments note, trapped air pockets inside loose foil conduct heat poorly compared to foil bridged by liquid meat juices.
+Third, resting on a solid counter eliminates bottom-face evaporation (j_{\text{evap}} = [span_126](start_span)[span_126](end_span)0), and transient conductive heat extraction into the counter depends on the counter material's thermal effusivity, e = \sqrt{k \rho[span_141](start_span)[span_141](end_span)[span_142](start_span)[span_142](end_span) c_p}. Using standard properties for stainless steel (k = 17\text{ W/(m}\cdot\text{K)}, \rho = 7900\text{ kg/m}^3, c_p = 460\text{ J/(kg}\cdot\text[span_143](start_span)[span_143](end_span){K)}), stainless steel has an effusivity of approximately 7,860 W·s⁰·⁵/(m²·K)—roughly 5.5–6.2 times higher than cooked lean beef at 65°C (~1,277 to 1,434 W·s⁰·⁵/(m²·K) across perpendicular and parallel fiber conductivities). Quantitative experimental benchmarks comparing marble slabs, wooden cutting boards, and wire racks during meat resting were not found in the retrieved scientific literature; until empirical measurements are collected, an algorithm can approximate solid contact using a semi-infinite contact resistance for high-effusivity metal or stone, a near-adiabatic bottom boundary for thick wood, and air-side convection/evaporation for wire racks.
+Cut Geometry, Thermophysical Properties, and Probe Physics
+Even under identical oven and resting conditions, carryover amplitude and timing shift sharply across cuts due to characteristic length (L_c), composition, and probe measurement artifacts.
+Thickness Scaling and the Mass-vs.-Carryover Paradox
+Transient conduction scales with two dimensionless groups: the Biot number (\text{Bi} = \frac{h L_c}{k}), comparing external heat-transfer resistance to internal conduction resistance, and the Fourier number (\text{Fo} = \frac{\alpha t}{L_c^2}), which sets dimensionless time. Because diffusion time scales with the square of half-thickness (L_c^2 / \alpha), doubling cut thickness quadruples the time to peak core temperature: in controlled 1D simulations across 2.5 cm, 5.0 cm, and 10.0 cm cuts, t_{\text{peak}} scaled from 1.9 min to 6.5 min to 23.5 min—nearly exact 4× scaling per thickness doubling. For a slab of half-thickness L_c = L/2 with k \approx 0.44\text{ W/(m}\cdot\text{K)} roasted at h \approx 25\text{–}35\text{ W/(m}^2\cdot\text{K)}, Biot numbers span roughly 0.8 for a 2 cm chop to 2.0–4.0 for 5–10 cm roasts.
+This scaling resolves an apparent contradiction between controlled oven studies and kitchen telemetry. In controlled 425°F oven tests by ThermoWorks, heavier/thicker cuts yielded larger carryover (+15.5°F in pork loin vs. +11.5°F in a thin pork chop) because a high Biot number and low surface-to-volume ratio (A/V) allow the cut to store a thick, hot outer shell that cools slowly. Conversely, user telemetry from predictive thermometers often shows less carryover in massive briskets or roasts than in steaks or salmon. In real kitchens, massive cuts are usually cooked longer and slower—flattening \nabla T before pull—whereas steaks and salmon are blasted with extreme sear or high-oven fluxes, producing steep exterior gradients relative to total thermal mass (m c_p). Solving the spatial PDE across actual thickness [span_106](start_span)[span_106](end_span)[span_108](start_span)[span_108](end_span)L under the inferred Biot number resolves both behaviors automatically without brittle mass heuristics.
+Composition-Dependent Thermophysical Properties (Choi and Okos)
+Rather than hardcoding a single thermal diffusivity \alpha across all proteins, an algorithm should compute temperature- and composition-dependent \rho(T), c_p(T), and k(T) from the ASHRAE / Choi and Okos (1986) constituent polynomial correlations (valid from −40°C to 150°C):
+\rho = \frac{1}{\sum_i \frac{x_i}{\rho_i(T)}}, \qquad c_p = \sum_i x_i \, c_{p,i}(T), \qquad k_{\parallel} = \sum_i \phi_i \, k_i(T), \qquad k_{\perp} = \frac{1}{\sum_i \frac{\phi_i}{k_i(T)}}
+where x_i and \phi_i = \frac{x_i \rho}{\rho_i} are the mass and volume fractions of water, protein, fat, carbohydrate, fiber, and ash.
+Protein (Assumed Water / Protein / Fat / Ash)
+	Temp (°C)
+	Density \rho (kg/m³)
+	Specific Heat c_p (J/(kg·K))
+	k_{\parallel} (W/(m·K))
+	k_{\perp} (W/(m·K))
+	\alpha_{\parallel} (\times 10^{-7} m²/s)
+	\alpha_{\perp} (\times 10^{-7} m²/s)
+	Chicken breast (75% / 22% / 2% / 1%)
+	20
+	1057.2
+	3631
+	0.522
+	0.428
+	1.36
+	1.11
+	Chicken breast (75% / 22% / 2% / 1%)
+	65
+	1041.4
+	3656
+	0.572
+	0.479
+	1.50
+	1.26
+	Lean beef / pork loin (72% / 21% / 6% / 1%)
+	20
+	1050.7
+	3566
+	0.506
+	0.401
+	1.35
+	1.07
+	Lean beef / pork loin (72% / 21% / 6% / 1%)
+	65
+	1034.6
+	3592
+	0.553
+	0.439
+	1.49
+	1.18
+	Atlantic salmon (65% / 20% / 14% / 1%)
+	20
+	1040.5
+	3414
+	0.471
+	0.354
+	1.33
+	1.00
+	Atlantic salmon (65% / 20% / 14% / 1%)
+	65
+	1024.0
+	3442
+	0.512
+	0.374
+	1.45
+	1.06
+	Marbled beef (58% / 18% / 23% / 1%)
+	20
+	1026.9
+	3262
+	0.436
+	0.316
+	1.30
+	0.94
+	Marbled beef (58% / 18% / 23% / 1%)
+	65
+	1010.2
+	3293
+	0.470
+	0.324
+	1.41
+	0.97
+	Table 3: Thermophysical properties computed from Choi and Okos (1986) correlations. Note: Lean beef thermal diffusivity (1.18–1.49 × 10⁻⁷ m²/s at 65°C) falls within the 1.0–1.7 × 10⁻⁷ m²/s band cited for cooked lean meat.
+Fat content strongly alters thermal response because lipid thermal conductivity is less than one-third that of water (0.16–0.18 W/(m·K) vs. 0.60–0.66 W/(m·K) across cooking temperatures). Increasing fat from 2% (skinless chicken breast) to 23% (marbled ribeye or brisket) lowers k_{\perp} by ~32% at 65°C, slowing heat penetration, steepening outer gradients under rapid heating, and contributing to high-heat carryover in fatty cuts like salmon. Meanwhile, parallel and perpendicular mixing models provide theoretical upper and lower bounds for fiber anisotropy, though experimental findings vary by species: tuna studies report >15% directional differences between parallel and perpendicular heat flow, whereas chicken meat measurements (0.27–0.38 W/(m·°C)) found no statistically significant effect of fiber orientation. Treating effective diffusivity \alpha_{\text{eff}} as an online-adapted parameter bounded between \alpha_{\perp} and \alpha_{\parallel} accommodates both species anisotropy and moisture loss.
+Multi-Sensor Placement, Axial Stem Conduction, and Lag
+A single-point thermometer almost never lands on the true geometric cold center. Modern multi-sensor wireless probes (4–7 internal and surface sensors plus an ambient sensor) eliminate single-point aiming errors by defining a virtual core as the minimum internal temperature (\min(T_1, \dots, T_n)) while capturing the spatial gradient along the probe shaft.
+Nevertheless, stainless-steel probe shafts conduct heat axially between hot cooker air and the meat interior—an error known as stem conduction. In cuts under 1 inch thick, thicker metal shafts (e.g., ~6 mm diameter) and shallow immersion depths allow heat to leak down the stem, inflating outer readings during cooking and distorting post-pull cooling curves. Inserting probes along the longest thermal path past the minimum insertion line minimizes stem error. In software, algorithms should still down-weight outer sensors showing anomalous rapid spikes aligned with ambient fluctuations and model first-order sensor thermal lag (\tau \frac{dT_{\text{meas}}}{dt} = T_{\text{true}} - T_{\text{meas}}), accounting for ~4–5 s full-reading response times and localized lag if a tip sits inside a cold fat pocket.
+Six Algorithmic Blind Spots and How to Model Them
+Field failures in predictive thermometers frequently stem from six physical edge cases that naive 1D symmetric solvers overlook.
+1. Pre-Cook Starting Temperature and Internal Non-Uniformity
+In poultry thigh experiments, starting meat 1–3°C colder than 4°C added 16–27 minutes to total baking time. On carryover magnitude, however, the impact depends on cook duration relative to diffusion time (\text{Fo} = \alpha t / L_c^2). In 1D simulations of a 5.0 cm steak roasted at 220°C to a 48°C pull, starting at 4°C vs. 18°C changed cook time (90.0 min vs. 77.1 min) but converged to the identical 5.9°C surface-to-core gradient and +0.8°C carryover. In short, high-flux sears of unevenly tempered cuts, initial non-uniformity T(x, 0) \neq \text{const} persists at pull time; algorithms with multi-sensor probes should initialize the spatial mesh by interpolating live sensor channels at t=0 rather than assuming a uniform refrigerator temperature.
+2. Flipping and Rotation Cadence
+Pan searing and direct grilling break boundary symmetry because the bottom face receives high conductive/contact flux (h_{\text{pan}} \sim 250\text{ W/(m}^2\cdot\text{K)}) while the top face cools in ambient air. Flipping reverses the asymmetric temperature field relative to the heat source, forcing predictive engines to recalculate. In 1D asymmetric pan simulations of a 3.5 cm steak at 240°C, flipping every 30 s versus every 240 s reduced cook time from 75.8 min to 48.3 min and raised post-pull carryover sixfold (+0.6°C vs. +0.1°C under wet-bulb assumptions) because rapid flipping prevented either face from cooling during long air-exposed intervals. Software must integrate the full thickness [0, L] and detect flips automatically from sudden sign inversions in top vs. bottom outer-sensor derivatives (\frac{dT_{\text{top}}}{dt} and \frac{dT_{\text{bot}}}{dt}), swapping boundary flux vectors upon detection.
+3. Basting, Glazing, and Oil or Fat Films
+Direct experimental datasets quantifying how butter basting, oil coatings, or sugary glazes alter surface emissivity \varepsilon or post-pull evaporation rates during resting were not found in the retrieved scientific literature. Structurally, existing transport physics bounds both cases: oil has higher density and volumetric heat capacity than air, bridges microscopic air gaps at pan or foil interfaces, and slows water escape while melted fat modifies liquid-phase transport; conversely, watery mops or spritzes re-wet the surface, temporarily spiking j_{\text{evap}} and depressing surface temperature. Rather than requiring manual glaze inputs, the state estimator can absorb these effects online by adapting a dynamic surface moisture factor \phi_w(t) and effective h_{\text{eff}}(t) whenever outer probe readings diverge from dry-crust predictions.
+4. Bone-In Cuts and Internal Cavities
+Contrary to culinary folklore that bones funnel heat rapidly into a roast, biophysical measurements show that hydrated cortical bone has lower thermal conductivity than lean muscle, though its lower volumetric heat capacity (\rho c_p) yields comparable thermal diffusivity.
+Tissue
+	Thermal Conductivity k (W/(m·K))
+	Density ρ (kg/m³)
+	Specific Heat c_p (J/(kg·K))
+	Lean skeletal muscle (65°C)
+	0.439 (⊥) – 0.553 (∥); ~0.50
+	1035–1090
+	3421–3592
+	Cortical bone
+	0.32–0.40 (outlier: 2.28)
+	1700–1908
+	1260
+	Cancellous (spongy) bone
+	0.31–0.50
+	900–1178
+	2260–2274
+	Table 4: Thermophysical comparison of skeletal muscle and bone. Note: One biomedical simulation study reported k = 2.280 W/(m·K) for cortical bone, diverging sharply from the 0.32–0.40 W/(m·K) range measured in hydrated bone.
+In software, bone acts primarily as a localized geometric barrier that alters local conduction paths and causes probes resting against bone to stall or fluctuate. Meanwhile, validated CFD benchmarks for carryover cooling around internal air cavities (such as whole poultry or stuffed roasts) were absent from the retrieved literature. Physically, an unstuffed whole bird behaves as a hollow shell rather than a solid sphere—trapping humid, stagnant air in the cavity and placing the coldest tissue inside the thickest breast or thigh wall. Modeling a whole breast wall as a finite slab bounded by outer skin (h_{\text{ext}}) and a low-convection, low-evaporation cavity interface (h_{\text{cavity}} \ll h_{\text{ext}}) is markedly safer than setting L_c from whole-bird diameter.
+5. Carryover Peak vs. Thermal Dose (Pasteurization and Tenderness)
+Predicting peak core temperature alone ignores the cumulative thermal dose accumulated during cooking and resting, which governs both microbial safety and connective-tissue tenderness.
+For pasteurization, USDA FSIS Appendix A requires at least a 6.5-log₁₀ reduction of Salmonella in cooked/roast beef and a 7.0-log₁₀ reduction in poultry. Instead of relying exclusively on instantaneous endpoint temperatures (such as 160°F/71.1°C for ground beef or 165°F/73.9°C for poultry), software can integrate lethality continuously across the cook and carryover curve:
+\text{Log Reduction}(t) = \int_0^t \frac{1}{D(T_{\text{ref}})} \, 10^{\frac{T_{\text{core}}(\tau) - T_{\text{ref}}}{z}} \, d\tau
+where D is the decimal reduction time (minutes per 1-log kill) and z is the temperature change shifting D by a factor of 10 (measured at 9.4–10.4°F for Salmonella, Listeria, and STEC in poultry validation studies). In FSIS Appendix A beef/pork tables, 6.5-log lethality holds range from 112 min at 130°F (54.4°C) to 12 min at 140°F (60.0°C) and 4 min at 145°F (62.8°C), whereas consumer whole-muscle guidance specifies 145°F plus a 3-minute rest. For roast chicken, pulling at 140°F and letting carryover reach 150°F achieves pasteurization during the rest without drying the breast.
+A critical safety caveat applies to very slow cooks: 2025 validation research and AMIF studies demonstrated that prolonged sub-lethal come-up times induce thermal adaptation in Salmonella, nearly doubling D_{54.4^\circ\text{C}} in roast beef from 10.3–13.0 min (non-adapted) to 23.3–23.4 min (thermally adapted), while extended dwell between 50°F and 130°F risks S. aureus enterotoxin production. A production algorithm must track come-up duration across 50–130°F and disable low-temperature lethality credit if heating is dangerously slow.
+For tenderness, collagen-to-gelatin conversion follows first-order Arrhenius kinetics (\frac{dC}{dt} = -k_0 e^{-E_a/(RT)} C) continuously across temperature rather than at a single switch point. Hydrolysis is extremely slow around 160–170°F (taking 24–36+ hours in sous vide) and accelerates sharply at 180–205°F (a commercial culinary calculator estimates ~3.5%/hr conversion at 175°F versus ~18.3%/hr at 195°F). Conversely, actin denaturation (E_a \approx 178.8\text{ kJ/mol} in cured pork DSC studies; complete around 74–83°C) severely degrades water-holding capacity. Integrating collagen conversion during multi-hour warm Cambro holds (145–155°F for 1–11 hours) predicts tenderization gains without pushing into actin-driven moisture loss.
+6. Sensor-to-Physics Coupling (Inverse State Estimation)
+Because a cooking app rarely knows exact cut thickness, fat percentage, oven airflow, or lid-opening events in advance, pure forward physics models drift quickly. Coupling the 1D PDE to live multi-sensor telemetry via an Extended Kalman Filter (demonstrated in pellet-grill control with a live heat-bias state) or a regularized ROM resolves this inverse problem in three steps:
+1. Maintain an augmented state vector: Track \mathbf{x}_k = [T_1, \dots, T_N, \alpha_{\text{eff}}, h_{\text{eff}}, \phi_w, q_{\text{bias}}]_k^T, where T_1 \dots T_N are nodal temperatures, \alpha_{\text{eff}} absorbs unknown thickness/fat scaling (\alpha/L^2), h_{\text{eff}} captures effective convection/radiation, \phi_w \in [0, 1] represents surface moisture availability for evaporative stall damping, and q_{\text{bias}} absorbs unmodeled fuel or lid transients.
+2. Assimilate multi-channel observations: Map probe readings \mathbf{y}_k = [T_{\text{sens},1}, \dots, T_{\text{sens},m}, T_{\text{amb}}]_k^T (logged roughly every 5 s) onto the mesh, assign virtual core to \min_i T_{\text{internal[span_280](start_span)[span_280](end_span)[span_281](start_span)[span_281](end_span)}, i}, and detect flips or lid openings from abrupt outer-sensor slope reversals.
+3. Run decoupled carryover lookahead: At each cycle, clone the estimated state (\hat{\alpha}_{\text{eff}}, \hat{T}_1 \dots \hat{T}_N), switch to the user's chosen resting boundary (T_{\text{rest}}, h_{\text{rest}}, \text{evap}_{\text{rest}}), and integrate forward to predict \hat{T}_{\text{peak}} and \Delta \hat{T}_{\text{carryover}} = \hat{T}_{\text{peak}} - \hat{T}_{\text{core[span_283](start_span)[span_283](end_span)}}(t). Trigger the pull alert when \hat{T}_{\text{peak}} \ge T_{\text{target}} or when projected post-pull thermal dose meets the FSIS lethality target.
+Implementation Roadmap by Engineering Module
+Developing this engine in four decoupled modules lets each physical subsystem be calibrated and regression-tested independently against logged cooks.
+Priority
+	Module
+	Core Mathematical Implementation
+	Key Validation Target
+	1
+	Spatial PDE & Thermophysical Core
+	Implicit 1D full-thickness [0, L] slab/cylinder solver with Choi & Okos (1986) (k, ρ, c_p) lookup by protein/fat class
+	Exact L² scaling of t_peak and ±0.5–1.0°C fit on dry-oven/sous-vide cooks
+	2
+	Coupled Surface Drying & Regime Switch
+	Mixed convective + radiative + Lewis-analogy evaporative flux damped below M_crit; distinct cooking vs. resting presets
+	Reproduce both 150–180°F BBQ stall and +10–20°F high-heat roast carryover
+	3
+	EKF / State Estimator & Flip Detector
+	Augmented EKF estimating nodal T(x), α/L², h_eff, φ_w, and q_bias from multi-sensor probe channels; flip/lid logic
+	Stable pull-offset convergence within first ~33% of cook without manual thickness input
+	4
+	Thermal Dose & Safety Integrator
+	Real-time numerical integration of USDA FSIS D/z lethality (with 50–130°F come-up guardrails) and Arrhenius collagen kinetics
+	Accurate pasteurization completion alerts during low-temp roasts and Cambro holds
+	Table 5: Prioritized software implementation roadmap linking research buckets to algorithmic modules.
+In deployment, shipping Modules 1–3 with conservative resting presets (uncovered rack, wooden board, tight foil, butcher paper, and insulated hold) lets the EKF handle pre-pull variability while continuously updating resting heat-loss parameters during the first 2–3 minutes after the cook pulls the meat. Once live post-pull surface cooling is observed directly, the forward integrator can immediately refine \hat{T}_{\text{peak}} and t_{\text{peak}} in real time—giving the cook a reliable alert to slice and halt carryover if an unexpected foil trap or steep crust gradient threatens to overshoot target doneness.
+Works cited
+1. Experience with Carryover Rise? : r/combustion_inc - Reddit, https://www.reddit.com/r/combustion_inc/comments/1dpswof/experience_with_carryover_rise/ 2. Trying to decide between CPT and M2+. I have a few questions., https://www.reddit.com/r/combustion_inc/comments/1ae1ka1/trying_to_decide_between_cpt_and_m2_i_have_a_few/ 3. [New Video] Proof resting doesn't keep meat juicy - Reddit, https://www.reddit.com/r/combustion_inc/comments/1bwjtfy/new_video_proof_resting_doesnt_keep_meat_juicy/ 4. Carryover Cooking: the Hot science Behind Your Food's Finish, https://blog.thermoworks.com/carryover-cooking-what-happens-after-you-cook/ 5. 11 months in, I'm not sure the use case : r/combustion_inc - Reddit, https://www.reddit.com/r/combustion_inc/comments/1ccfddt/11_months_in_im_not_sure_the_use_case/ 6. The Roast Keeps Cooking After You Pull It - Artificial Wasteland, https://artwaste.land/strata/the-roast-keeps-cooking/ 7. US11213158B2 - Cooking system - Google Patents, https://patents.google.com/patent/US11213158B2/en 8. Patents by Inventor Christopher Charles Young, https://patents.justia.com/inventor/christopher-charles-young 9. Wood-Fired Pellet Grill | APMonitor Apps, https://apmonitor.com/apps/pellet-grill/ 10. (PDF) A fast food-freezing temperature estimation framework using, https://www.researchgate.net/publication/392139088_A_fast_food-freezing_temperature_estimation_framework_using_optimally_located_sensors 11. Predictive Thermometer & WiFi Display - Combustion - KitchenLab, https://www.kitchenlab.eu/en/p/predictive-thermometer-wifi-display-combustion/ 12. Predictive Thermometer - Combustion Inc, https://combustion.inc/products/predictive-thermometer 13. Process lethality spreadsheet - Meat Foundation, http://www.meatfoundation.org/IndustryResources/process-lethality-spreadsheet 14. Combustion Inc: Better cooking starts here, https://combustion.inc/ 15. Searing Meat: Does It Lock In Juices? | SoulDriver, https://souldriver.com.au/report/searing-meat-does-it-lock-in-juices/pdf 16. What Causes The BBQ Stall: It's Not What You Think, https://amazingribs.com/more-technique-and-science/more-cooking-science/understanding-and-beating-barbecue-stall/ 17. THE STUDY OF THERMAL DENATURATION OF BEEF, PORK, https://www.meatjournal.ru/jour/article/download/120/188 18. 3D Modelling of Coupled Mass and Heat Transfer of A Convection, https://www.scribd.com/document/675784475/3D-modelling-of-coupled-mass-and-heat-transfer-of-a-convection-2013-Meat-Sci 19. Meater Alternatives: Top 5 Wireless Meat Thermometers (2026), https://www.chefstemp.com/meater-alternatives-you-need-to-try/ 20. meat research - news letter, https://meatupdate.csiro.au/data/MEAT_RESEARCH_NEWS_LETTER_71-7.pdf 21. Temperature Measurement Errors: Causes, Types & Fixes, https://www.instrumentationblog.in/temperature-measurement-errors/ 22. Collagen Hydrolysis Time Temp Curve Calculator - True Nature Meats, https://www.truenaturemeats.com/pages/collagen-hydrolysis-time-temp-curve-calculator 23. Collagen conversion - what is the threshold temperature?, https://community.chefsteps.com/discussion/1547/collagen-conversion-what-is-the-threshold-temperature 24. Resting Meat [Meat Science & Cooking Guide] - TheOnlineGrill.com, https://theonlinegrill.com/resting-meat/ 25. Prediction of cooking-induced food transformations, https://dipot.ulb.ac.be/dspace/bitstream/2013/412377/3/survey_published.pdf 26. A Mathematical Model For Meat Cooking - arXiv, https://arxiv.org/html/1908.10787v2 27. Modeling and Simulation of Mass Transfer in Food Processing - PMC, https://pmc.ncbi.nlm.nih.gov/articles/PMC13298288/ 28. US6270252B1 - Predictive temperature measurement system, https://patents.google.com/patent/US6270252B1/en 29. Engineering Case Studies and Portfolio | Think Circuits, https://tcircuits.com/portfolio/ 30. Modeling heat and mass transfer during the oven roasting of meat, https://www.researchgate.net/publication/230328013_Modeling_heat_and_mass_transfer_during_the_oven_roasting_of_meat 31. Thermal Characterisation and Isoconversional Kinetic Analysis of, https://pmc.ncbi.nlm.nih.gov/articles/PMC10417705/ 32. Investigating the effects of protein thermal denaturation on the water, https://academic.oup.com/ijfst/article/60/1/vvaf076/8102298 33. Differential Scanning Calorimetry of Beef Muscle, https://cdn.prod.website-files.com/6847a10d0504c168d71dcbd5/693f7d9a2f03e1de857ccc76_Differential-scanning-calorimetry-of-beef-muscle-Influence-of-postmortem-conditioning.pdf 34. (PDF) Heat and Mass Transfer in Roast Beef Cooking. Temperature, https://www.researchgate.net/publication/284916925_Heat_and_Mass_Transfer_in_Roast_Beef_Cooking_Temperature_and_Weight_Loss_Prediction 35. How Meat Cooks: Heat's Effects on Muscle Fibers - ThermoWorks Blog, https://blog.thermoworks.com/coming-heat-effects-muscle-fibers-meat/ 36. Carryover Cooking: A Problem or Much Ado About Nothing?, https://amazingribs.com/more-technique-and-science/more-cooking-science/carryover-cooking/ 37. Food Engineering: Heat Transfer Basics | PDF - Scribd, https://www.scribd.com/document/823073610/2025-STUDENTS-COPY-ABE-518-FOOD-ENGINEERING 38. When to Wrap a Brisket, and Why the Thermometer Alone Won't Tell, https://smokeinsider.com/when-to-wrap-a-brisket/ 39. The BBQ Stall Explained: How to Beat It, https://www.smokedbbqsource.com/the-bbq-stall-explained-how-to-beat-it/ 40. Modelling of heat and mass transfer in capillary-porous food products, https://www.witpress.com/Secure/elibrary/papers/CMEM01/CMEM01059FU.pdf 41. New Combustion Inc. Wireless Thermometer: first impressions, https://pitmaster.amazingribs.com/forum/accessorize-your-pit/digital-thermometers/1350742-new-combustion-inc-wireless-thermometer-first-impressions/page4 42. LITERATURE DATA OF HEAT TRANSFER COEFFICIENTS IN, https://www.tandfonline.com/doi/pdf/10.1081/JFP-120005794 43. thermal properties of foods, https://www.kingson-foodtech.com/files/L2.pdf 44. R09 SI: Thermal Properties of Foods - ResearchGate, https://www.researchgate.net/file.PostFileLoader.html?id=57dc0df6dc332d6c7a2b0e94&assetKey=AS%3A406964417908742%401474039286881 45. SI R10 Ch19 - Thermal Properties of Foods and Beverages, https://www.studocu.vn/vn/document/truong-dai-hoc-bach-khoa-ha-noi/nhap-mon-ky-thuat-nhiet/si-r10-ch19-nhiet/40761929 46. Thermal Properties of Foods Overview | PDF | Water - Scribd, https://www.scribd.com/document/565085144/R08S 47. Robust Modelling of Heat and Mass Transfer in Processing of Solid, https://www.food.dtu.dk/-/media/9004c40f23534289b32681a7973b5f59.pdf 48. Why Does My Meat Thermometer Take So Long to Stabilize?, https://www.kitchentroop.com/why-does-my-meat-thermometer-take-so-long-to-stabilize/ 49. THERMAL PROPERTIES OF SKIPJACK TUNA (KATSUWONUS, https://www.tandfonline.com/doi/full/10.1081/JFP-100000345 50. Mathematical Modelling and Simulation of the Thermal Processing, https://digital.csic.es/bitstream/10261/60456/3/Mathematical_Modelling_Simulation_Thermal.pdf 51. Thermal conductivity of chicken meat at temperatures between, https://www.researchgate.net/publication/230117323_Thermal_conductivity_of_chicken_meat_at_temperatures_between_-75_and_20C 52. Wireless thermometer, generation 2 - Combustion - KitchenLab, https://www.kitchenlab.eu/en/p/wireless-thermometer-generation-2-combustion/ 53. AI Smart Kitchen & Cooking Gadgets: The 2026 UK Buyer's Guide, https://usefulaigadgets.com/blog/ai-kitchen-gadgets-uk-guide-2026.html 54. Getting started with the Predictive Thermometer App - Combustion Inc, https://combustion.inc/pages/apps 55. TEMPERATURE CALIBRATION WITH ISOTECH BLOCK BATHS, https://www.thlsystems.cz/images/katalogy/IsotechTraceableBook.pdf 56. ATR121 PT100 Reads Low: Diagnose the Temperature Error | IMD, https://industrialmonitordirect.com/blogs/knowledgebase/troubleshooting-atr121-pt100-low-temperature-readings 57. The Thermodynamics of Cooking and How Different Cooking, https://amazingribs.com/more-technique-and-science/grill-and-smoker-setup-and-firing/thermodynamics-of-cooking/ 58. Best Smoked Brisket Recipe: Meathead's Texas Style BBQ Brisket, https://amazingribs.com/tested-recipes/beef-and-bison-recipes/smoked-brisket-texas-style/ 59. foiling and basting - Genuine Ideas, https://genuineideas.com/ArticlesIndex/foil.html 60. Directional microwave ablation in spine: experimental assessment, https://pmc.ncbi.nlm.nih.gov/articles/PMC11357707/ 61. 3-D Numerical Simulation of Heat Transfer in Biomedical Applications, https://www.researchgate.net/publication/258396520_3-D_Numerical_Simulation_of_Heat_Transfer_in_Biomedical_Applications 62. NPL REPORT MS 32 EMPIR PROJECT 17IND01 MIMAS (MEDICAL, https://eprintspublications.npl.co.uk/9909/1/MS32.pdf 63. Drilling in Bone: Modeling Heat Generation and Temperature, https://www.researchgate.net/publication/10605559_Drilling_in_Bone_Modeling_Heat_Generation_and_Temperature_Distribution 64. Approaches for modeling interstitial ultrasound ablation of tumors, https://pmc.ncbi.nlm.nih.gov/articles/PMC4026292/ 65. FSIS Cooking Guideline for Meat and Poultry Products (Revised, https://www.ncagr.gov/meat-poultry-inspection/Appendix-A12-2021/download?attachment 66. Inspection Methods Hybrid (IMH), https://www.fsis.usda.gov/sites/default/files/media_file/documents/IMH-Workbook-January-2025-Part-2.pdf 67. (PDF) Validation of D- and z-values for Salmonella, Listeria, https://www.researchgate.net/publication/392144391_Validation_of_D-_and_z-values_for_Salmonella_Listeria_monocytogenes_and_Shiga_toxin-producing_Escherichia_coli_in_processed_meat_products 68. Poultry pasteurization chart, https://f.hubspotusercontent10.net/hubfs/5845715/HACCP_templates/PDF/Poultry-pasteurization-chart.pdf 69. Time and Temperature Table for Cooked Beef or Pork (not Poultry), https://riverstonehealth.org/wp-content/uploads/SousVide_LethalityChart_BeefandPork.pdf 70. Meat Temperature Chart: Doneness, Carryover, Sous Vide, https://cheatsheets.davidveksler.com/meat-temperature-chart.html 71. UDSA, FSIS Appendix A (Lethality) and Understanding an, https://meatscience.org/docs/default-source/publications-resources/rmc/2015/reciprocation--sindelar.pdf?sfvrsn=2 72. Table 2 - Meat & Poultry Lethality Calculator, https://meatsafetycalc.com/fsis-appendix-a/table-2 73. Simple Roast Chicken - Combustion Inc, https://combustion.inc/blogs/guides/simple-roast-chicken 74. McMinn Proposal - University of Wisconsin–Madison, https://asset.library.wisc.edu/1711.dl/3ZW5OHTFBPJCU8N/R/file-bf71e.pdf 75. Kinetic modeling of the alkaline deproteinization of Nile-tilapia skin, https://pmc.ncbi.nlm.nih.gov/articles/PMC7210409/ 76. Effect of Heat Sealing and Storage on Mechanical and Barrier, https://www.mdpi.com/2079-6412/12/12/1929 77. Kinetics of Thermal Denaturation of Protein in Cured Pork Meat, https://www.researchgate.net/publication/288952193_Kinetics_of_Thermal_Denaturation_of_Protein_in_Cured_Pork_Meat

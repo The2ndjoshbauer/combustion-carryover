@@ -1,6 +1,7 @@
 package inc.combustion.example.details
 
 import android.graphics.Typeface
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
@@ -14,6 +15,7 @@ import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -26,6 +28,7 @@ import com.github.mikephil.charting.data.LineData
 import com.github.mikephil.charting.data.LineDataSet
 import inc.combustion.example.MeatType
 import inc.combustion.example.R
+import inc.combustion.example.RestingEnvironment
 import inc.combustion.example.components.GlidePathSample
 import inc.combustion.example.components.ProbeState
 import inc.combustion.example.prediction.PhysicsPredictor
@@ -33,6 +36,7 @@ import inc.combustion.example.theme.Combustion_Red
 import inc.combustion.example.theme.Combustion_Yellow
 import inc.combustion.framework.ble.device.MeatMaterials
 import inc.combustion.framework.service.LoggedProbeDataPoint
+import java.util.Locale
 import kotlin.math.max
 import kotlin.math.roundToInt
 
@@ -61,12 +65,8 @@ fun CookingDashboard(
         }
     }
 
-    val v4Material = when (probeState.selectedMeatType.value) {
-        MeatType.PORK -> MeatMaterials.PORK_SHOULDER
-        MeatType.POULTRY -> MeatMaterials.POULTRY
-        MeatType.FISH -> MeatMaterials.SALMON
-        else -> MeatMaterials.BEEF_BRISKET
-    }
+    val selectedMeat = probeState.selectedMeatType.value
+    val v5Material = selectedMeat.toMeatMaterial()
 
     val effectiveTargetC = probeState.getEffectiveTargetTempC()
     val displayTargetTemp = probeState.toDisplayTemperature(effectiveTargetC).roundToInt()
@@ -155,7 +155,7 @@ fun CookingDashboard(
                     ),
                     shape = RoundedCornerShape(8.dp),
                     modifier = Modifier
-                        .heightIn(min = 44.dp)
+                        .heightIn(min = 48.dp)
                         .testTag("set_target_temp_button")
                 ) {
                     Text(
@@ -167,9 +167,13 @@ fun CookingDashboard(
                 }
             }
 
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(12.dp))
+
+            PhysicsTelemetrySummaryPanel(probeState = probeState)
+
+            Spacer(modifier = Modifier.height(12.dp))
             Divider(color = Color.DarkGray, thickness = 1.dp)
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(12.dp))
 
             V4PredictionCard(
                 temperaturesCelsius = probeState.temperaturesCelsius.toList(),
@@ -178,8 +182,10 @@ fun CookingDashboard(
                 currentCoreTempC = probeState.rawCoreTemperatureC.value,
                 ambientTempC = probeState.rawAmbientTemperatureC.value,
                 targetTempC = effectiveTargetC,
-                meatType = v4Material,
-                isWrapped = probeState.isWrapped.value,
+                meatType = v5Material,
+                selectedMeat = selectedMeat,
+                restingEnvironment = probeState.selectedRestingEnvironment.value,
+                surfaceMoisturePhi = probeState.surfaceMoisturePhiState.value,
                 effectiveDiffusivity = probeState.effectiveDiffusivityState.value
             )
 
@@ -193,54 +199,120 @@ fun CookingDashboard(
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            Text("Material Physics:", style = MaterialTheme.typography.body2, color = Color.Gray)
+            Text(
+                text = "Choi & Okos Protein / Fat Class:",
+                style = MaterialTheme.typography.body2,
+                color = Color.Gray
+            )
             Spacer(modifier = Modifier.height(8.dp))
 
-            Row(
+            val meatClasses = listOf(
+                MeatType.BEEF,
+                MeatType.MARBLED_BEEF,
+                MeatType.PORK,
+                MeatType.POULTRY,
+                MeatType.FISH
+            )
+            Column(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceEvenly
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                MeatButton("🥩", "Beef", probeState.selectedMeatType.value == MeatType.BEEF) {
-                    onMeatSelected(MeatType.BEEF)
-                    probeState.effectiveDiffusivityState.value = MeatType.BEEF.diffusivity
-                    probeState.recalculateCarryover()
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    meatClasses.take(3).forEach { meat ->
+                        Box(modifier = Modifier.weight(1f)) {
+                            MeatButton(
+                                icon = meat.icon,
+                                label = meat.shortLabel,
+                                isSelected = selectedMeat == meat,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("meat_chip_${meat.name.lowercase(Locale.US)}")
+                            ) {
+                                onMeatSelected(meat)
+                                probeState.effectiveDiffusivityState.value = meat.diffusivity
+                                probeState.recalculateCarryover()
+                            }
+                        }
+                    }
                 }
-                MeatButton("🐷", "Pork", probeState.selectedMeatType.value == MeatType.PORK) {
-                    onMeatSelected(MeatType.PORK)
-                    probeState.effectiveDiffusivityState.value = MeatType.PORK.diffusivity
-                    probeState.recalculateCarryover()
-                }
-                MeatButton("🍗", "Poultry", probeState.selectedMeatType.value == MeatType.POULTRY) {
-                    onMeatSelected(MeatType.POULTRY)
-                    probeState.effectiveDiffusivityState.value = MeatType.POULTRY.diffusivity
-                    probeState.recalculateCarryover()
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    meatClasses.drop(3).forEach { meat ->
+                        Box(modifier = Modifier.weight(1f)) {
+                            MeatButton(
+                                icon = meat.icon,
+                                label = meat.shortLabel,
+                                isSelected = selectedMeat == meat,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("meat_chip_${meat.name.lowercase(Locale.US)}")
+                            ) {
+                                onMeatSelected(meat)
+                                probeState.effectiveDiffusivityState.value = meat.diffusivity
+                                probeState.recalculateCarryover()
+                            }
+                        }
+                    }
                 }
             }
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(Color(0xFFEEEEEE), shape = RoundedCornerShape(8.dp))
-                    .padding(horizontal = 12.dp, vertical = 4.dp)
+            Text(
+                text = "Resting Environment Boundary Preset:",
+                style = MaterialTheme.typography.body2,
+                color = Color.Gray
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+
+            val restingPresets = RestingEnvironment.values().toList()
+            val currentRestingEnv = probeState.selectedRestingEnvironment.value
+
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Checkbox(
-                    checked = probeState.isWrapped.value,
-                    onCheckedChange = {
-                        probeState.isWrapped.value = it
-                        probeState.recalculateCarryover()
-                    },
-                    colors = CheckboxDefaults.colors(checkedColor = Combustion_Red)
-                )
-                Text(
-                    text = "Wrapped / Insulated (Foil)",
-                    style = MaterialTheme.typography.body2,
-                    fontWeight = FontWeight.Medium,
-                    color = Color.Black,
-                    modifier = Modifier.padding(start = 8.dp)
-                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    restingPresets.take(3).forEach { env ->
+                        Box(modifier = Modifier.weight(1f)) {
+                            RestingEnvironmentChip(
+                                environment = env,
+                                isSelected = currentRestingEnv == env,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("resting_preset_${env.name.lowercase(Locale.US)}")
+                            ) {
+                                probeState.selectRestingEnvironment(env)
+                            }
+                        }
+                    }
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    restingPresets.drop(3).forEach { env ->
+                        Box(modifier = Modifier.weight(1f)) {
+                            RestingEnvironmentChip(
+                                environment = env,
+                                isSelected = currentRestingEnv == env,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("resting_preset_${env.name.lowercase(Locale.US)}")
+                            ) {
+                                probeState.selectRestingEnvironment(env)
+                            }
+                        }
+                    }
+                }
             }
 
             Spacer(modifier = Modifier.height(16.dp))
@@ -282,6 +354,174 @@ fun CookingDashboard(
 }
 
 @Composable
+private fun PhysicsTelemetrySummaryPanel(probeState: ProbeState) {
+    val selectedMeat = probeState.selectedMeatType.value
+    val targetLog10 = selectedMeat.targetSalmonellaLog10
+    val liveLog10 = probeState.livePasteurizationLog10.value
+    val restLog10 = probeState.projectedRestPasteurizationLog10.value
+    val collagenPct = probeState.collagenConversionPct.value
+    val moisturePhi = probeState.surfaceMoisturePhiState.value
+    val eventStatus = probeState.lastFlipOrLidEvent.value
+
+    val safetyStatusLabel: String
+    val safetyBadgeColor: Color
+    when {
+        liveLog10 >= targetLog10 -> {
+            safetyStatusLabel = "FSIS SAFE"
+            safetyBadgeColor = Color(0xFF00C853)
+        }
+        restLog10 >= targetLog10 -> {
+            safetyStatusLabel = "SAFE AT REST"
+            safetyBadgeColor = Combustion_Yellow
+        }
+        else -> {
+            safetyStatusLabel = String.format(Locale.US, "TARGET %.1f LOG", targetLog10)
+            safetyBadgeColor = Color(0xFF90A4AE)
+        }
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color(0xFF1A1D22), shape = RoundedCornerShape(12.dp))
+            .padding(12.dp)
+            .testTag("physics_telemetry_summary_panel"),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        // Row 1: Time to Peak & USDA FSIS Pasteurization Log-Kill
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            // Time to Peak metric box
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .background(Color(0xFF252930), shape = RoundedCornerShape(8.dp))
+                    .padding(10.dp)
+            ) {
+                Text(
+                    text = "TIME TO PEAK (t_peak)",
+                    style = MaterialTheme.typography.overline,
+                    color = Color(0xFFB0B8C1)
+                )
+                Text(
+                    text = probeState.timeToPeakMinutes.value,
+                    style = MaterialTheme.typography.h6,
+                    fontWeight = FontWeight.Bold,
+                    color = Combustion_Yellow
+                )
+                Text(
+                    text = "Resting Peak: ${probeState.predictedRestingPeakTemp.value}°",
+                    style = MaterialTheme.typography.caption,
+                    color = Color(0xFFD5DCE2)
+                )
+            }
+
+            // USDA FSIS Pasteurization metric box
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .background(Color(0xFF252930), shape = RoundedCornerShape(8.dp))
+                    .padding(10.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "FSIS LOG-KILL",
+                        style = MaterialTheme.typography.overline,
+                        color = Color(0xFFB0B8C1)
+                    )
+                    Text(
+                        text = safetyStatusLabel,
+                        fontSize = 9.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = safetyBadgeColor
+                    )
+                }
+                Text(
+                    text = String.format(Locale.US, "%.1f ➜ %.1f log₁₀", liveLog10, restLog10),
+                    style = MaterialTheme.typography.h6,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.White
+                )
+                val comeUpNote = if (probeState.slowComeUpPenaltyActive.value) {
+                    "AMIF 2x D-Penalty Active"
+                } else {
+                    "Live ➜ Post-Rest Carryover"
+                }
+                Text(
+                    text = comeUpNote,
+                    style = MaterialTheme.typography.caption,
+                    color = if (probeState.slowComeUpPenaltyActive.value) Combustion_Red else Color(0xFFD5DCE2)
+                )
+            }
+        }
+
+        // Row 2: Collagen Conversion % & Surface Moisture / Flip Detector
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .background(Color(0xFF252930), shape = RoundedCornerShape(8.dp))
+                    .padding(10.dp)
+            ) {
+                Text(
+                    text = "COLLAGEN GELATIN %",
+                    style = MaterialTheme.typography.overline,
+                    color = Color(0xFFB0B8C1)
+                )
+                Text(
+                    text = String.format(Locale.US, "%.1f%%", collagenPct),
+                    style = MaterialTheme.typography.h6,
+                    fontWeight = FontWeight.Bold,
+                    color = Color(0xFF00E5FF)
+                )
+                LinearProgressIndicator(
+                    progress = (collagenPct / 100.0).toFloat().coerceIn(0f, 1f),
+                    color = Color(0xFF00E5FF),
+                    backgroundColor = Color(0xFF37474F),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 4.dp)
+                        .height(5.dp)
+                )
+            }
+
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .background(Color(0xFF252930), shape = RoundedCornerShape(8.dp))
+                    .padding(10.dp)
+            ) {
+                Text(
+                    text = "CRUST φ_w & OBSERVER",
+                    style = MaterialTheme.typography.overline,
+                    color = Color(0xFFB0B8C1)
+                )
+                Text(
+                    text = String.format(Locale.US, "φ_w = %.2f", moisturePhi),
+                    style = MaterialTheme.typography.h6,
+                    fontWeight = FontWeight.Bold,
+                    color = Color(0xFFFF9100)
+                )
+                Text(
+                    text = eventStatus,
+                    style = MaterialTheme.typography.caption,
+                    color = if (eventStatus == "Steady Heat") Color(0xFFD5DCE2) else Combustion_Yellow
+                )
+            }
+        }
+    }
+}
+
+@Composable
 fun GlidePathRealTimeChart(
     probeState: ProbeState,
     plotData: List<LoggedProbeDataPoint>,
@@ -289,7 +529,7 @@ fun GlidePathRealTimeChart(
 ) {
     val historyVersion = probeState.historyVersion.value
     val selectedMeat = probeState.selectedMeatType.value
-    val isWrapped = probeState.isWrapped.value
+    val restingEnv = probeState.selectedRestingEnvironment.value
     val liveSamples = probeState.glidePathHistory.toList()
     val loggedCount = plotData.size
 
@@ -298,7 +538,7 @@ fun GlidePathRealTimeChart(
         liveSamples.size,
         historyVersion,
         selectedMeat,
-        isWrapped,
+        restingEnv,
         targetTempC
     ) {
         if (plotData.isNotEmpty()) {
@@ -629,6 +869,7 @@ fun MeatButton(
     icon: String,
     label: String,
     isSelected: Boolean,
+    modifier: Modifier = Modifier,
     onClick: () -> Unit
 ) {
     val bgColor = if (isSelected) Combustion_Yellow else Color.Transparent
@@ -638,11 +879,56 @@ fun MeatButton(
     Button(
         onClick = onClick,
         colors = ButtonDefaults.buttonColors(backgroundColor = bgColor),
-        border = if (!isSelected) androidx.compose.foundation.BorderStroke(1.dp, borderColor) else null,
+        border = if (!isSelected) BorderStroke(1.dp, borderColor) else null,
         shape = RoundedCornerShape(50),
-        modifier = Modifier.height(40.dp)
+        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+        modifier = modifier.heightIn(min = 48.dp)
     ) {
-        Text("$icon $label", color = textColor, fontSize = 12.sp)
+        Text(
+            text = "$icon $label",
+            color = textColor,
+            fontSize = 11.sp,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+@Composable
+fun RestingEnvironmentChip(
+    environment: RestingEnvironment,
+    isSelected: Boolean,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    val bgColor = if (isSelected) Combustion_Red else Color(0xFF23272D)
+    val textColor = Color.White
+    val borderColor = if (isSelected) Combustion_Red else Color(0xFF454D57)
+
+    Button(
+        onClick = onClick,
+        colors = ButtonDefaults.buttonColors(backgroundColor = bgColor),
+        border = BorderStroke(1.dp, borderColor),
+        shape = RoundedCornerShape(10.dp),
+        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
+        modifier = modifier.heightIn(min = 48.dp)
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(
+                text = environment.shortLabel,
+                color = textColor,
+                fontSize = 11.sp,
+                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                text = String.format(Locale.US, "h=%.1f | ε=%.2f", environment.hConvectiveWPerM2K, environment.emissivity),
+                color = Color(0xFFCFD8DC),
+                fontSize = 9.sp,
+                maxLines = 1
+            )
+        }
     }
 }
 
@@ -655,7 +941,9 @@ fun V4PredictionCard(
     ambientTempC: Double,
     targetTempC: Double,
     meatType: MeatMaterials,
-    isWrapped: Boolean,
+    selectedMeat: MeatType = MeatType.BEEF,
+    restingEnvironment: RestingEnvironment = RestingEnvironment.WOOD_BOARD,
+    surfaceMoisturePhi: Double = 0.75,
     effectiveDiffusivity: Double
 ) {
     val predictor = remember { PhysicsPredictor() }
@@ -663,12 +951,17 @@ fun V4PredictionCard(
     var predictionText by remember { mutableStateOf("Waiting for data...") }
     var textColor by remember { mutableStateOf(Color.DarkGray) }
 
+    val choiProps = remember(selectedMeat, currentCoreTempC) {
+        selectedMeat.evaluateProperties(currentCoreTempC.coerceAtLeast(20.0))
+    }
+
     LaunchedEffect(
         currentCoreTempC,
         ambientTempC,
         targetTempC,
         meatType,
-        isWrapped,
+        restingEnvironment,
+        surfaceMoisturePhi,
         coreIndex,
         surfaceIndex
     ) {
@@ -682,8 +975,10 @@ fun V4PredictionCard(
                 ambientTempC = ambientTempC,
                 targetTempC = targetTempC,
                 meatType = meatType,
-                isWrapped = isWrapped,
-                customDiffusivity = effectiveDiffusivity
+                isWrapped = restingEnvironment.isInsulated,
+                customDiffusivity = effectiveDiffusivity,
+                restingEnvironment = restingEnvironment,
+                initialSurfaceMoisturePhi = surfaceMoisturePhi
             )
 
             when {
@@ -711,11 +1006,13 @@ fun V4PredictionCard(
     Card(
         elevation = 2.dp,
         backgroundColor = Color(0xFFF5F5F5),
-        modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 8.dp)
     ) {
         Column(modifier = Modifier.padding(12.dp)) {
             Text(
-                text = "V4 CRANK-NICOLSON ORACLE (${meatType.displayName})",
+                text = "V5 CRANK-NICOLSON ORACLE (${meatType.displayName} • ${restingEnvironment.shortLabel})",
                 style = MaterialTheme.typography.overline,
                 color = Color.DarkGray
             )
@@ -726,7 +1023,13 @@ fun V4PredictionCard(
                 color = textColor
             )
             Text(
-                text = String.format("Calibrated α: %.2f × 10⁻⁷ m²/s", effectiveDiffusivity * 1e7),
+                text = String.format(
+                    Locale.US,
+                    "Calibrated α: %.2f × 10⁻⁷ m²/s (Fiber Anisotropy [%.2f, %.2f])",
+                    effectiveDiffusivity * 1e7,
+                    choiProps.alphaPerpM2PerS * 1e7,
+                    choiProps.alphaParallelM2PerS * 1e7
+                ),
                 style = MaterialTheme.typography.caption,
                 color = Color.DarkGray
             )
